@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Logs et données générées à l'exécution 
+*.jsonl
+app.log
+
+# Environnements virtuels
+venv/
+.venv/
+
+# Fichiers spécifiques à l'IDE/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Volumes Docker 
+ollama-models

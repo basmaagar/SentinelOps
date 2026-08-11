@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 5s # Fréquence courte volontaire : on a besoin d'une résolution fine
+                       # pour respecter l'objectif TTD < 60s. Un scrape_interval de 15s
+                       # (valeur par défaut Prometheus) rendrait cet objectif quasi impossible
+                       # à tenir, puisqu'il faudrait déjà attendre 15-30s avant qu'un point
+                       # anormal n'apparaisse dans les données.
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Métriques applicatives de l'app cible (latence, compteurs, charge simulée)
+  - job_name: "target-app"
+    static_configs:
+      - targets: ["target-app:8000"]
+
+  # Métriques infrastructure/conteneur (CPU réel, mémoire réelle, I/O disque)
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Prometheus se scrape lui-même : utile pour vérifier que le pipeline
+  # de monitoring tourne correctement (debug rapide en cas de dashboard vide).
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

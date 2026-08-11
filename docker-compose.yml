@@ -1,0 +1,83 @@
+services:
+  # --- Application cible instrumentée ---
+  target-app:
+    build: ./app
+    container_name: sentinelops-target-app
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # healthcheck : permet aux injecteurs (Jour 2) de vérifier que l'app est prête
+    # avant de déclencher une panne, évitant des faux résultats de test.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # --- Monitoring : collecte des métriques ---
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: sentinelops-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - target-app
+      - cadvisor
+    restart: unless-stopped
+
+  # cAdvisor : métriques infrastructure réelles par conteneur (CPU, RAM, I/O).
+  # Nécessaire car prometheus_client (dans l'app) ne voit que ce que le code
+  # applicatif expose explicitement, pas la consommation réelle du conteneur.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: sentinelops-cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+  # --- Visualisation ---
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: sentinelops-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Identifiants par défaut simplifiés pour un usage local/démo uniquement.
+      # A ne jamais faire en production réelle - acceptable ici car le prototype
+      # tourne en local, sans exposition réseau externe.
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # --- Inférence LLM locale ---
+  ollama:
+    image: ollama/ollama:0.3.12
+    container_name: sentinelops-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      # Volume nommé : persiste les modèles téléchargés entre les redémarrages
+      # du conteneur. Sans cela, il faudrait re-télécharger 2 modèles (~10GB)
+      # à chaque `docker compose down`, ce qui casserait le workflow itératif.
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # Décommenter si une GPU NVIDIA est disponible sur la machine de développement :
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ollama-models:
