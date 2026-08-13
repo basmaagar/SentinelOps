@@ -35,7 +35,7 @@ def log_decision(metrics_hypothesis: dict, logs_hypothesis: dict, arbiter_verdic
         "action_executed": action_executed,
         "post_action_outcome": None,  # rempli ultérieurement par le Jour 10 (vérification post-action)
     }
-    with DECISIONS_LOG_PATH.open("a") as f:
+    with DECISIONS_LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return decision_id
 
@@ -55,7 +55,7 @@ def append_post_action_outcome(decision_id: str, outcome: dict) -> bool:
         "record_type": "post_action_outcome_update",
         "post_action_outcome": outcome,
     }
-    with DECISIONS_LOG_PATH.open("a") as f:
+    with DECISIONS_LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return True
 
@@ -63,5 +63,5 @@ def append_post_action_outcome(decision_id: str, outcome: dict) -> bool:
 def read_decisions() -> list[dict]:
     if not DECISIONS_LOG_PATH.exists():
         return []
-    with DECISIONS_LOG_PATH.open() as f:
+    with DECISIONS_LOG_PATH.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]

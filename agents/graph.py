@@ -126,7 +126,20 @@ def make_arbiter_node(llm_client, model: str):
     def node(state: SentinelState) -> dict:
         metrics_hyp = state.get("metrics_hypothesis") or _no_evidence_hypothesis()
         logs_hyp = state.get("logs_hypothesis") or _no_evidence_hypothesis()
-        verdict = run_arbiter(llm_client, model, metrics_hyp, logs_hyp)
+
+        # Les données réellement transmises aux agents sont passées à
+        # l'arbitre (Jour 12). C'est indispensable pour vérifier en code
+        # que les preuves citées existent bien dans ces données : sans la
+        # source, l'ancrage des preuves ne serait pas calculable et la
+        # confiance resterait une simple auto-évaluation du modèle.
+        metrics_events = state.get("anomaly_metrics_events", [])
+        log_events = state.get("anomaly_log_events", [])
+
+        verdict = run_arbiter(
+            llm_client, model, metrics_hyp, logs_hyp,
+            metrics_observed=metrics_events, logs_observed=log_events,
+            metrics_events=metrics_events, logs_events=log_events,
+        )
         return {"arbiter_verdict": verdict.model_dump()}
     return node
 

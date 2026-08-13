@@ -17,11 +17,18 @@ applicatif : base uniquement ton raisonnement sur les métriques fournies.
 Réponds UNIQUEMENT avec un objet JSON strictement conforme à ce format, sans aucun texte \
 avant ou après :
 {
-  "hypothesis": "<description courte de la cause probable>",
-  "evidence": ["<preuve 1 tirée des métriques>", "<preuve 2>"],
-  "confidence": <nombre entre 0.0 et 1.0>,
-  "composant_suspecte": "<nom du composant>"
-}"""
+  "hypothesis": "phrase courte decrivant la cause probable",
+  "evidence": ["citation exacte d une metrique et de sa valeur", "seconde citation"],
+  "confidence": 0.0,
+  "composant_suspecte": "nom du composant"
+}
+
+REGLES IMPERATIVES :
+- "evidence" doit etre une LISTE de chaines de caracteres, jamais un objet.
+- Chaque preuve doit citer une metrique REELLEMENT presente dans les donnees
+  fournies ci-dessous, avec sa valeur. N invente jamais de metrique ni de valeur.
+- Ne recopie PAS l exemple ci-dessus : remplace chaque valeur par ton analyse.
+- "confidence" est un nombre decimal entre 0.0 et 1.0, sans guillemets."""
 
 
 def build_prompt(anomaly_events: list[dict]) -> str:

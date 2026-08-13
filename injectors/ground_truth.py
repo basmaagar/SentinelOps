@@ -28,7 +28,7 @@ def log_incident(incident_type: str, start_ts: float, end_ts: float,
         "composant_cible": composant_cible,
         "params": params,
     }
-    with GROUND_TRUTH_PATH.open("a") as f:
+    with GROUND_TRUTH_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
     return incident_id
 
@@ -37,5 +37,5 @@ def read_incidents() -> list[dict]:
     """Relit tous les incidents enregistrés (utilisé en Semaine 3 pour l'évaluation)."""
     if not GROUND_TRUTH_PATH.exists():
         return []
-    with GROUND_TRUTH_PATH.open() as f:
+    with GROUND_TRUTH_PATH.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]

@@ -17,3 +17,9 @@ venv/
 
 # Volumes Docker 
 ollama-models
+
+
+logs/
+archives/
+*.jsonl
+__pycache__/

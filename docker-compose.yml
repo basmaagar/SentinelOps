@@ -6,6 +6,12 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    # Volume de logs (Jour 12) : app.log est écrit DANS le conteneur, mais la
+    # boucle de supervision tourne sur l'hôte. Sans ce montage, l'Agent Logs
+    # ne pourrait jamais lire de vraies lignes -- il resterait alimenté à la
+    # main comme dans les tests, et le TTD ne serait pas mesurable.
+    volumes:
+      - ./logs:/app/logs
     # healthcheck : permet aux injecteurs (Jour 2) de vérifier que l'app est prête
     # avant de déclencher une panne, évitant des faux résultats de test.
     healthcheck:

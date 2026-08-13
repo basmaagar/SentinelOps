@@ -27,11 +27,18 @@ base uniquement ton raisonnement sur les templates de logs fournis.
 Réponds UNIQUEMENT avec un objet JSON strictement conforme à ce format, sans aucun texte \
 avant ou après :
 {
-  "hypothesis": "<description courte de la cause probable>",
-  "evidence": ["<preuve 1 tirée des templates de logs>", "<preuve 2>"],
-  "confidence": <nombre entre 0.0 et 1.0>,
-  "composant_suspecte": "<nom du composant>"
-}"""
+  "hypothesis": "phrase courte decrivant la cause probable",
+  "evidence": ["citation exacte d un template de log recu", "seconde citation"],
+  "confidence": 0.0,
+  "composant_suspecte": "nom du composant"
+}
+
+REGLES IMPERATIVES :
+- "evidence" doit etre une LISTE de chaines de caracteres, jamais un objet.
+- Chaque preuve doit citer un element REELLEMENT present dans les donnees
+  fournies ci-dessous. N invente jamais de template, de composant ni de valeur.
+- Ne recopie PAS l exemple ci-dessus : remplace chaque valeur par ton analyse.
+- "confidence" est un nombre decimal entre 0.0 et 1.0, sans guillemets."""
 
 
 def build_prompt(log_anomaly_events: list[dict]) -> str:

@@ -12,6 +12,7 @@ Pourquoi exposer un /load plutôt que d'attendre les scripts d'injection du Jour
    réagit correctement à une variation de charge, sans dépendre du travail de demain.
 """
 
+import os
 import time
 import random
 import logging
@@ -36,7 +37,14 @@ app = FastAPI(title="SentinelOps Target App")
 #    détecter comme anormal au Jour 4.
 logger = logging.getLogger("sentinelops.app")
 logger.setLevel(logging.INFO)
-_handler = logging.FileHandler("app.log")
+
+# Jour 12 : le fichier est écrit dans logs/, monté en volume vers l'hôte
+# (cf. docker-compose.yml). C'est ce qui permet à la boucle de supervision,
+# qui tourne hors du conteneur, de lire ces lignes au fil de l'eau.
+# LOG_DIR reste paramétrable pour pouvoir lancer l'app hors Docker (tests).
+LOG_DIR = os.getenv("SENTINELOPS_LOG_DIR", "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+_handler = logging.FileHandler(os.path.join(LOG_DIR, "app.log"))
 _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
 logger.addHandler(_handler)
 
@@ -128,7 +136,6 @@ def metrics():
 # tester toute la logique sans avoir Docker/Prometheus en marche.
 # =========================================================================
 
-import os
 import gc
 
 DISK_INJECTION_DIR = "/tmp/sentinelops_disk_injection"

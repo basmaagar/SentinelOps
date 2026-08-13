@@ -104,6 +104,22 @@ class MultivariateAnomalyDetector:
         self.min_samples_to_fit = min_samples_to_fit
         self._model: IsolationForest | None = None
         self._training_buffer: list[list[float]] = []
+        # Schéma de features figé au moment de l'entraînement.
+        #
+        # CORRECTIF (Jour 12) : le vecteur était auparavant construit à
+        # partir des clés présentes dans l'échantillon courant. Tant que
+        # les tests fournissaient des dictionnaires codés en dur, la taille
+        # était constante et le défaut invisible. En conditions réelles,
+        # une métrique peut apparaître ou disparaître d'un cycle à l'autre
+        # (une requête PromQL sans correspondance ne renvoie rien) — d'où
+        # deux problèmes :
+        #   1. plantage sec dès que le nombre de features change ;
+        #   2. plus insidieux : les clés étant triées, l'apparition d'une
+        #      métrique DÉCALE toutes les positions suivantes. Le modèle
+        #      comparerait alors du CPU à de la mémoire, sans aucune erreur.
+        # On fige donc l'ordre des features, et on le respecte ensuite.
+        self._feature_names: list[str] | None = None
+        self._last_known: dict[str, float] = {}
 
     def fit(self, feature_vectors: list[list[float]]) -> None:
         self._model = IsolationForest(
@@ -112,17 +128,58 @@ class MultivariateAnomalyDetector:
         )
         self._model.fit(feature_vectors)
 
-    def observe_and_predict(self, feature_vector: list[float]) -> bool:
+    def _vectorise(self, metrics: dict[str, float]) -> list[float]:
+        """
+        Projette un échantillon sur le schéma figé.
+
+        - métrique du schéma absente de l'échantillon -> dernière valeur
+          connue (et non zéro : injecter un zéro artificiel créerait une
+          chute brutale que le modèle interpréterait comme une anomalie) ;
+        - métrique absente du schéma -> ignorée ici. Elle reste couverte
+          par le z-score univarié, qui n'a pas cette contrainte de forme.
+        """
+        self._last_known.update(metrics)
+        return [float(metrics.get(name, self._last_known.get(name, 0.0)))
+                for name in self._feature_names]
+
+    def observe_and_predict(self, metrics: dict[str, float] | list[float]) -> bool:
         """
         Alimente le buffer d'entraînement tant qu'aucun modèle n'est prêt,
         puis bascule en mode prédiction une fois le seuil atteint.
         Retourne True si le vecteur est jugé anormal.
+
+        Accepte un dictionnaire (usage normal, permet la gestion du schéma)
+        ou une liste (compatibilité avec les tests unitaires du Jour 3).
         """
+        if isinstance(metrics, dict):
+            if self._feature_names is None:
+                # Le schéma se construit pendant la phase d'apprentissage :
+                # on accumule l'union des clés vues, ce qui évite de figer
+                # un schéma incomplet sur le tout premier échantillon.
+                self._last_known.update(metrics)
+                self._feature_names = sorted(self._last_known)
+            feature_vector = self._vectorise(metrics)
+        else:
+            feature_vector = list(metrics)
+
         if self._model is None:
             self._training_buffer.append(feature_vector)
             if len(self._training_buffer) >= self.min_samples_to_fit:
-                self.fit(self._training_buffer)
+                # Le schéma est figé ici, définitivement : toutes les
+                # prédictions ultérieures utiliseront ces features, dans
+                # cet ordre.
+                width = len(feature_vector)
+                self._training_buffer = [v for v in self._training_buffer
+                                         if len(v) == width]
+                if len(self._training_buffer) >= self.min_samples_to_fit // 2:
+                    self.fit(self._training_buffer)
             return False  # pas de verdict tant que le modèle n'est pas entraîné
+
+        expected = self._model.n_features_in_
+        if len(feature_vector) != expected:
+            # Filet de sécurité : plutôt que de planter, on tronque ou on
+            # complète. Ne devrait plus se produire une fois le schéma figé.
+            feature_vector = (feature_vector + [0.0] * expected)[:expected]
 
         prediction = self._model.predict([feature_vector])[0]  # -1 = anomalie, 1 = normal
         return prediction == -1
@@ -144,8 +201,12 @@ class AnomalyDetector:
         """
         events = [self.zscore.update(name, ts, value) for name, value in metrics.items()]
 
-        ordered_values = [metrics[k] for k in sorted(metrics.keys())]
-        is_multivariate_anomaly = self.multivariate.observe_and_predict(ordered_values)
+        # On passe le dictionnaire, pas une liste : c'est le détecteur
+        # multivarié qui gère l'ordre et la stabilité de ses features
+        # (cf. MultivariateAnomalyDetector._vectorise). Construire la liste
+        # ici, à partir des clés du moment, était la cause du plantage
+        # "X has 5 features, but IsolationForest is expecting 4".
+        is_multivariate_anomaly = self.multivariate.observe_and_predict(metrics)
         if is_multivariate_anomaly:
             events.append(AnomalyEvent(
                 ts=ts, metric="__multivariate__", value=0.0, z_score=None,
