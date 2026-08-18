@@ -117,8 +117,20 @@ def _repair_truncated_json(fragment: str) -> dict:
 # "<preuve 1 tirée des templates de logs>". C'est le pire cas possible —
 # une hypothèse d'apparence structurée, sans aucun contenu réel — et il
 # passerait sans encombre la validation Pydantic.
-_PLACEHOLDER_MARKERS = ("<preuve", "<hypothèse", "<hypothese", "<composant",
-                        "<diagnostic", "<justification")
+_PLACEHOLDER_MARKERS = (
+    # Gabarits à chevrons de la première version des prompts.
+    "<preuve", "<hypothèse", "<hypothese", "<composant",
+    "<diagnostic", "<justification",
+    # Exemples concrets de la seconde version. Les chevrons ayant été
+    # retirés pour cesser d'inviter à la recopie, les petits modèles se
+    # sont mis à recopier l'EXEMPLE lui-même — mot pour mot. Le problème
+    # n'était donc pas la forme du gabarit mais le fait qu'un modèle
+    # faible, faute de savoir répondre, restitue ce qu'il a sous les yeux.
+    # Il faut donc reconnaître chaque formulation d'exemple introduite.
+    "citation exacte d une metrique", "citation exacte d un template",
+    "seconde citation", "phrase courte decrivant la cause",
+    "nom du composant", "citation exacte",
+)
 
 
 def normalise_payload(payload: dict) -> dict:
