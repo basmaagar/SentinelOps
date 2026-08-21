@@ -91,7 +91,7 @@ class LoopConfig:
     # "production" = régime strict, "evaluation" = seuils abaissés pour
     # exercer la boucle de remédiation pendant la campagne. Le profil
     # retenu est journalisé avec chaque décision.
-    risk_profile: str = "evaluation"
+    risk_profile: str = "production"
 
     # Intervalle du message périodique d'état. Sur un système sain, la
     # boucle est totalement silencieuse — ce qui est le comportement voulu,
@@ -445,6 +445,11 @@ class SupervisionLoop:
     def _log(self, state: dict, verdict: dict, decision_dict: dict,
              action_executed: str | None, timing: dict) -> str:
         decision_id = log_decision(
+            # Les données d'entrée des agents sont journalisées avec leurs
+            # conclusions : sans elles, un audit devrait croire le score
+            # d'ancrage sur parole (cf. decisions_log.log_decision).
+            metrics_observed=state.get("anomaly_metrics_events", []),
+            logs_observed=state.get("anomaly_log_events", []),
             metrics_hypothesis=state.get("metrics_hypothesis", {}),
             logs_hypothesis=state.get("logs_hypothesis", {}),
             arbiter_verdict={**verdict, "timing": timing},

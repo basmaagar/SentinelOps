@@ -42,6 +42,8 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
 from human_validation import list_pending, resolve          # noqa: E402
 from timeline import render_timeline, narrate               # noqa: E402
+from confrontation import render_confrontation, CONFRONTATION_CSS  # noqa: E402
+import analysis as ana                                      # noqa: E402
 from actions import execute_action, ActionExecutionError    # noqa: E402
 
 DECISIONS_PATH = _ROOT / "guardrails" / "decisions_log.jsonl"
@@ -168,13 +170,30 @@ html,body,[class*="css"]{font-family:'IBM Plex Sans',sans-serif;color:var(--ink)
 .so-key{display:flex;gap:18px;margin-top:9px;font-family:'IBM Plex Mono';
   font-size:10px;color:var(--faint);flex-wrap:wrap;}
 
+/* Onglets : trois questions distinctes, pas trois pages de widgets.
+   Maintenant → qu'attend-on de moi. Le dossier → que s'est-il passé.
+   Le système → puis-je lui faire confiance. */
+.stTabs [data-baseweb="tab-list"]{gap:2px;border-bottom:1px solid var(--rule);}
+.stTabs [data-baseweb="tab"]{font-family:'Space Grotesk'!important;font-size:13px!important;
+  font-weight:600!important;color:var(--faint)!important;background:transparent!important;
+  padding:8px 16px!important;}
+.stTabs [aria-selected="true"]{color:var(--ink)!important;
+  border-bottom:2px solid var(--signal)!important;}
+.so-panel{background:var(--panel);border:1px solid var(--rule);border-radius:6px;
+  padding:14px 17px;}
+.so-ptitle{font-family:'Space Grotesk';font-size:14px;font-weight:600;color:var(--ink);}
+.so-psub{font-size:12px;color:var(--dim);margin:3px 0 10px;line-height:1.45;}
+.so-psub b{color:var(--ink);font-weight:500;}
+.stSlider label{font-family:'IBM Plex Mono'!important;font-size:10.5px!important;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--faint)!important;}
+
 .so-badge{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;
   border-radius:2px;border:1px solid;}
 .b-auto{color:var(--ok);border-color:#1F4A3C;}
 .b-human{color:var(--decide);border-color:#4A3A1A;}
 .b-none{color:var(--faint);border-color:var(--rule);}
 </style>
-"""
+""" + "<style>" + CONFRONTATION_CSS + "</style>"
 st.markdown(CSS, unsafe_allow_html=True)
 
 
@@ -371,207 +390,282 @@ st.markdown(html_block(f"""
 
 
 # ---------------------------------------------------------------------------
-# La dernière heure — le récit avant les décisions
+# Trois onglets, trois questions
 #
-# Placée en tête parce qu'une décision isolée ne se juge pas : il faut voir
-# ce qui s'est passé avant. Les courbes viennent de Prometheus, les
-# marqueurs des décisions du système, les bandes des pannes réellement
-# injectées. On lit de gauche à droite si le système a réagi pendant la
-# panne, après, ou pas du tout.
+# L'écran ne cherche pas à tout montrer en même temps. Chaque onglet répond
+# à une question qu'un opérateur se pose à un moment distinct :
+#   Maintenant  — qu'attend-on de moi ?
+#   Le dossier  — que s'est-il réellement passé ?
+#   Le système  — puis-je lui faire confiance sur la durée ?
 # ---------------------------------------------------------------------------
 incidents = read_jsonl(GROUND_TRUTH_PATH)
-
-st.markdown(html_block("""<div class="so-sec"><h2>La dernière heure</h2><span class="ln"></span></div>"""), unsafe_allow_html=True)
-st.markdown(html_block(f'<div class="so-story">{narrate(decisions, incidents)}</div>'),
-            unsafe_allow_html=True)
-
-try:
-    frise = render_timeline(PROMETHEUS_URL, decisions, incidents)
-    st.markdown(html_block(f'<div class="so-frame">{frise}</div>'), unsafe_allow_html=True)
-    st.markdown(html_block("""<div class="so-key">
-      <span><span style="color:var(--ok)">●</span> exécuté seul</span>
-      <span><span style="color:var(--decide)">◆</span> vous attend</span>
-      <span><span style="color:var(--degraded)">✕</span> refusé</span>
-      <span><span style="background:#1B2340;padding:0 9px">&nbsp;</span> panne injectée</span>
-      <span style="margin-left:auto">échelle verticale propre à chaque série —
-        on compare des formes, pas des grandeurs</span>
-    </div>"""), unsafe_allow_html=True)
-except Exception:  # noqa: BLE001
-    st.markdown(html_block("""<div class="so-empty"><div class="t">Frise indisponible</div>
-    <div class="s">Prometheus ne répond pas sur localhost:9090.
-    Lancez <code>docker compose up -d</code>.</div></div>"""), unsafe_allow_html=True)
+onglet_now, onglet_dossier, onglet_systeme = st.tabs(
+    ["Maintenant", "Le dossier", "Le système"])
 
 
-# ---------------------------------------------------------------------------
-# File de validation — la raison d'être de l'écran
-# ---------------------------------------------------------------------------
-st.markdown(html_block(f"""<div class="so-sec"><h2>En attente de votre décision</h2>
-<span class="n">{len(pending)}</span><span class="ln"></span></div>"""), unsafe_allow_html=True)
-
-if not pending:
-    st.markdown(html_block("""
-    <div class="so-empty">
-      <div class="t">Rien à trancher</div>
-      <div class="s">Le système exécute seul ce qu'il juge sûr et remonte ici tout le reste.
-      Lancez une injection de panne pour voir la file se remplir.</div>
-    </div>"""), unsafe_allow_html=True)
-else:
-    seuils = {"faible": 0.60, "modere": 0.80, "eleve": 1.01}
-    for item in pending:
-        verdict = item.get("arbiter_verdict") or {}
-        guardrail = item.get("guardrail_decision") or {}
-        factors = extract_factors(verdict)
-        seuil = float(guardrail.get("confidence_threshold")
-                      or seuils.get(guardrail.get("intrinsic_risk", ""), 0.75))
-
-        action_fr = {"restart_container": "Redémarrer",
-                     "scale_replica": "Mettre à l'échelle"}.get(item.get("action", ""),
-                                                                item.get("action", "Agir sur"))
-        raisons = ", ".join(guardrail.get("reasons", [])) or "seuil non atteint"
-
-        st.markdown(html_block(f"""
-        <div class="so-card">
-          <div class="so-hrow">
-            <div style="flex:1">
-              <div class="so-act">{action_fr} <em>{item.get('target', '?')}</em></div>
-              <div class="so-diag">{verdict.get('diagnosis', 'Diagnostic indisponible')}</div>
-            </div>
-            <div class="so-when">{since(item.get('ts', 0))}</div>
-          </div>
-          {confidence_chain_html(factors, seuil)}
-          {evidence_chips(verdict, factors)}
-          <div class="so-meta">{raisons} · {verdict.get('composant_suspecte', '?')} · {item.get('validation_id', '')[:8]}</div>
-        </div>
-        """), unsafe_allow_html=True)
-
-        c1, c2, c3 = st.columns([1.25, 1, 5.5])
-        vid = item["validation_id"]
-        if c1.button(f"Approuver — {action_fr.lower()}", key=f"ok_{vid}", type="primary"):
-            resolve(vid, approved=True)
-            try:
-                import docker
-                execute_action(docker.from_env(), item["action"], item["target"])
-                statut, message = "executee", f"{action_fr} exécuté sur {item['target']}"
-            except (ActionExecutionError, Exception) as exc:  # noqa: BLE001
-                statut, message = "echec_execution", f"Approuvé, mais l'exécution a échoué : {exc}"
-            log_human_feedback({
-                "validation_id": vid, "decision_id": item.get("decision_id"),
-                "decision_humaine": "approuvee", "statut_execution": statut,
-                "action": item["action"], "target": item["target"],
-                "confiance_systeme": verdict.get("final_confidence"),
-                "seuil_applique": seuil, "ts": time.time(),
-            })
-            (st.success if statut == "executee" else st.error)(message)
-            time.sleep(1.2)
-            st.rerun()
-
-        if c2.button("Refuser", key=f"no_{vid}", type="secondary"):
-            resolve(vid, approved=False)
-            # Un refus est l'information la plus précieuse de cette
-            # interface : il signale un cas où le système s'est trompé
-            # alors qu'il se jugeait suffisamment sûr pour proposer.
-            log_human_feedback({
-                "validation_id": vid, "decision_id": item.get("decision_id"),
-                "decision_humaine": "refusee", "statut_execution": "non_executee",
-                "action": item["action"], "target": item["target"],
-                "confiance_systeme": verdict.get("final_confidence"),
-                "seuil_applique": seuil, "ts": time.time(),
-            })
-            st.info("Refus enregistré — aucune action exécutée.")
-            time.sleep(1.0)
-            st.rerun()
-
-
-# ---------------------------------------------------------------------------
-# Fiabilité mesurée
-# ---------------------------------------------------------------------------
-st.markdown(html_block("""<div class="so-sec"><h2>Fiabilité mesurée</h2><span class="ln"></span></div>"""), unsafe_allow_html=True)
-
-if RESULTS_PATH.exists():
-    res = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
-    prec = res.get("precision_diagnostic")
-    ttd = res.get("ttd_median_s")
-    hall = res.get("taux_hallucination")
-    sous60 = res.get("ttd_sous_60s")
-
-    ecart = (prec - 0.70) * 100 if prec is not None else None
-    st.markdown(html_block(f"""
-    <div class="so-strip">
-      <div class="so-cell">
-        <div class="so-k">Cause racine correcte</div>
-        <div class="so-v">{prec:.1%}</div>
-        <div class="so-d {'up' if ecart and ecart >= 0 else 'dn'}">
-          {'▲' if ecart and ecart >= 0 else '▼'} {abs(ecart):.1f} pts vs cible 70 %</div>
-      </div>
-      <div class="so-cell">
-        <div class="so-k">Diagnostic — médiane</div>
-        <div class="so-v">{ttd:.1f} s</div>
-        <div class="so-d {'up' if sous60 and sous60 >= .5 else 'flat'}">
-          {sous60:.0%} des cas sous 60 s</div>
-      </div>
-      <div class="so-cell">
-        <div class="so-k">Preuves sans ancrage</div>
-        <div class="so-v" style="color:var(--degraded)">{hall:.1%}</div>
-        <div class="so-d dn">{res.get('preuves_citees', 0) - res.get('preuves_ancrees', 0)}
-          des {res.get('preuves_citees', 0)} preuves citées</div>
-      </div>
-      <div class="so-cell">
-        <div class="so-k">Actions autonomes</div>
-        <div class="so-v">{res.get('actions_executees', 0)}</div>
-        <div class="so-d flat">{res.get('validations_humaines', 0)} renvoyées à un humain</div>
-      </div>
-    </div>
-    """), unsafe_allow_html=True)
-    st.caption(f"Campagne de {res.get('incidents_injectes', 0)} incidents injectés · "
-               f"couverture {res.get('couverture', 0):.0%}")
-else:
-    st.markdown(html_block("""<div class="so-empty"><div class="t">Aucune campagne mesurée</div>
-    <div class="s">Lancez <code>python evaluation/run_campaign.py</code> puis
-    <code>python evaluation/compute_metrics.py</code>.</div></div>"""), unsafe_allow_html=True)
-
-
-# ---------------------------------------------------------------------------
-# Journal des décisions
-# ---------------------------------------------------------------------------
-st.markdown(html_block("""<div class="so-sec"><h2>Décisions récentes</h2><span class="ln"></span></div>"""), unsafe_allow_html=True)
-
-recentes = sorted(decisions, key=lambda d: d.get("ts", 0), reverse=True)[:12]
-if recentes:
-    lignes = []
-    for d in recentes:
-        v = d.get("arbiter_verdict") or {}
-        g = d.get("guardrail_decision") or {}
-        dec = g.get("decision", "—")
-        badge = {"autoriser_auto": ("b-auto", "auto"),
-                 "validation_humaine": ("b-human", "humain"),
-                 "refuser": ("b-none", "refusé")}.get(dec, ("b-none", dec))
-        conf = v.get("final_confidence")
-        lignes.append(f"""
-        <div class="so-row">
-          <span class="so-badge {badge[0]}">{badge[1]}</span>
-          <span style="color:var(--faint);width:88px">{since(d.get('ts', 0))}</span>
-          <span style="color:var(--signal);width:150px">{v.get('composant_suspecte', '—')}</span>
-          <span style="width:60px;color:var(--ink)">{f'{conf:.2f}' if conf is not None else '—'}</span>
-          <span style="color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;
-            white-space:nowrap">{v.get('diagnosis', '')[:110]}</span>
-          <span style="color:var(--faint)">{d.get('action_executed') or '—'}</span>
-        </div>""")
-    st.markdown(html_block(f'<div style="border:1px solid var(--rule);border-radius:6px;'
-                f'overflow:hidden;background:var(--panel)">{"".join(lignes)}</div>'),
+# ===========================================================================
+# MAINTENANT — la frise, puis la file à trancher
+# ===========================================================================
+with onglet_now:
+    st.markdown(html_block("""<div class="so-sec"><h2>La dernière heure</h2>
+    <span class="ln"></span></div>"""), unsafe_allow_html=True)
+    st.markdown(html_block(f'<div class="so-story">{narrate(decisions, incidents)}</div>'),
                 unsafe_allow_html=True)
-else:
-    st.markdown(html_block("""<div class="so-empty"><div class="t">Journal vide</div>
-    <div class="s">Démarrez la boucle de supervision : <code>python supervision/orchestrator.py</code></div>
-    </div>"""), unsafe_allow_html=True)
+
+    try:
+        frise = render_timeline(PROMETHEUS_URL, decisions, incidents)
+        st.markdown(html_block(f'<div class="so-frame">{frise}</div>'), unsafe_allow_html=True)
+        st.markdown(html_block("""<div class="so-key">
+          <span><span style="color:var(--ok)">&#9679;</span> exécuté seul</span>
+          <span><span style="color:var(--decide)">&#9670;</span> vous attend</span>
+          <span><span style="color:var(--degraded)">&#10005;</span> refusé</span>
+          <span><span style="background:#1B2340;padding:0 9px">&nbsp;</span> panne injectée</span>
+          <span style="margin-left:auto">échelle verticale propre à chaque série —
+            on compare des formes, pas des grandeurs</span></div>"""),
+                    unsafe_allow_html=True)
+    except Exception:  # noqa: BLE001
+        st.markdown(html_block("""<div class="so-empty"><div class="t">Frise indisponible</div>
+        <div class="s">Prometheus ne répond pas sur localhost:9090.</div></div>"""),
+                    unsafe_allow_html=True)
+
+    st.markdown(html_block(f"""<div class="so-sec"><h2>En attente de votre décision</h2>
+    <span class="n">{len(pending)}</span><span class="ln"></span></div>"""),
+                unsafe_allow_html=True)
+
+    if not pending:
+        st.markdown(html_block("""<div class="so-empty">
+          <div class="t">Rien à trancher</div>
+          <div class="s">Le système exécute seul ce qu'il juge sûr et remonte ici tout le reste.</div>
+        </div>"""), unsafe_allow_html=True)
+    else:
+        par_id = {d.get("decision_id"): d for d in decisions}
+        for item in pending:
+            verdict = item.get("arbiter_verdict") or {}
+            guardrail = item.get("guardrail_decision") or {}
+            factors = extract_factors(verdict)
+            seuil = float(guardrail.get("confidence_threshold") or 0.75)
+            action_fr = {"restart_container": "Redémarrer",
+                         "scale_replica": "Mettre à l'échelle"}.get(
+                             item.get("action", ""), "Agir sur")
+            raisons = ", ".join(guardrail.get("reasons", [])) or "seuil non atteint"
+
+            st.markdown(html_block(f"""<div class="so-card">
+              <div class="so-hrow"><div style="flex:1">
+                <div class="so-act">{action_fr} <em>{item.get('target', '?')}</em></div>
+                <div class="so-diag">{verdict.get('diagnosis', 'Diagnostic indisponible')}</div>
+              </div><div class="so-when">{since(item.get('ts', 0))}</div></div>
+              {confidence_chain_html(factors, seuil)}
+              <div class="so-meta">{raisons} · {item.get('validation_id', '')[:8]}</div>
+            </div>"""), unsafe_allow_html=True)
+
+            # Le face-à-face est la pièce qui permet de DÉCIDER : il montre
+            # ce que chaque enquêteur a vu et si ses preuves tiennent.
+            source = par_id.get(item.get("decision_id")) or item
+            st.markdown(html_block(render_confrontation(source)), unsafe_allow_html=True)
+
+            c1, c2, _ = st.columns([1.3, 1, 5.2])
+            vid = item["validation_id"]
+            if c1.button(f"Approuver — {action_fr.lower()}", key=f"ok_{vid}", type="primary"):
+                resolve(vid, approved=True)
+                try:
+                    import docker
+                    execute_action(docker.from_env(), item["action"], item["target"])
+                    statut, message = "executee", f"{action_fr} exécuté sur {item['target']}"
+                except Exception as exc:  # noqa: BLE001
+                    statut, message = "echec_execution", f"Approuvé, mais échec : {exc}"
+                log_human_feedback({
+                    "validation_id": vid, "decision_id": item.get("decision_id"),
+                    "decision_humaine": "approuvee", "statut_execution": statut,
+                    "action": item["action"], "target": item["target"],
+                    "confiance_systeme": verdict.get("final_confidence"),
+                    "seuil_applique": seuil, "ts": time.time()})
+                (st.success if statut == "executee" else st.error)(message)
+                time.sleep(1.2)
+                st.rerun()
+
+            if c2.button("Refuser", key=f"no_{vid}", type="secondary"):
+                resolve(vid, approved=False)
+                log_human_feedback({
+                    "validation_id": vid, "decision_id": item.get("decision_id"),
+                    "decision_humaine": "refusee", "statut_execution": "non_executee",
+                    "action": item["action"], "target": item["target"],
+                    "confiance_systeme": verdict.get("final_confidence"),
+                    "seuil_applique": seuil, "ts": time.time()})
+                st.info("Refus enregistré — aucune action exécutée.")
+                time.sleep(1.0)
+                st.rerun()
+            st.write("")
+
+
+# ===========================================================================
+# LE DOSSIER — l'instruction complète d'un incident
+# ===========================================================================
+with onglet_dossier:
+    st.markdown(html_block("""<div class="so-sec"><h2>Instruction d'un incident</h2>
+    <span class="ln"></span></div>"""), unsafe_allow_html=True)
+
+    recentes = sorted(decisions, key=lambda d: d.get("ts", 0), reverse=True)[:40]
+    if not recentes:
+        st.markdown(html_block("""<div class="so-empty"><div class="t">Journal vide</div>
+        <div class="s">Démarrez la boucle : <code>python supervision/orchestrator.py</code></div>
+        </div>"""), unsafe_allow_html=True)
+    else:
+        def etiquette(d):
+            v = d.get("arbiter_verdict") or {}
+            g = d.get("guardrail_decision") or {}
+            c = v.get("final_confidence")
+            return (f"{since(d.get('ts', 0)):>12} · {v.get('composant_suspecte', '—'):<20} "
+                    f"· {f'{c:.2f}' if c is not None else '—'} · {g.get('decision', '—')}")
+
+        choix = st.selectbox("Décision à instruire", recentes, format_func=etiquette,
+                             label_visibility="collapsed")
+        v = choix.get("arbiter_verdict") or {}
+        g = choix.get("guardrail_decision") or {}
+
+        st.markdown(html_block(f"""<div class="so-card calm">
+          <div class="so-hrow"><div style="flex:1">
+            <div class="so-act">{v.get('diagnosis', '—')}</div>
+            <div class="so-diag">{v.get('justification', '')}</div>
+          </div><div class="so-when">{since(choix.get('ts', 0))}</div></div>
+          {confidence_chain_html(extract_factors(v),
+                                 float(g.get('confidence_threshold') or 0.75))}
+          <div class="so-meta">{g.get('decision', '—')} · profil {g.get('profile', '—')}
+          · {choix.get('decision_id', '')[:8]}</div></div>"""), unsafe_allow_html=True)
+
+        st.markdown(html_block(render_confrontation(choix)), unsafe_allow_html=True)
+
+        colg, cold = st.columns(2)
+        with colg:
+            st.markdown(html_block(f"""<div class="so-panel">
+              <div class="so-ptitle">Règles appliquées</div>
+              <div class="so-psub">Ce que le garde-fou a vérifié, dans l'ordre.</div>
+              <div style="font-family:'IBM Plex Mono';font-size:11.5px;color:var(--dim);
+                line-height:1.9">
+                action <b style="color:var(--ink)">{g.get('action', '—')}</b><br>
+                risque intrinsèque <b style="color:var(--ink)">{g.get('intrinsic_risk', '—')}</b><br>
+                seuil exigé <b style="color:var(--ink)">{g.get('confidence_threshold', '—')}</b><br>
+                motifs <b style="color:var(--degraded)">{', '.join(g.get('reasons', [])) or 'aucun'}</b>
+              </div></div>"""), unsafe_allow_html=True)
+        with cold:
+            po = choix.get("post_action_outcome") or {}
+            if po:
+                classe = po.get("classification", "—")
+                couleur = "var(--ok)" if classe == "positive" else "var(--degraded)"
+                contenu = (f'<div style="font-family:\'IBM Plex Mono\';font-size:11.5px;'
+                           f'color:var(--dim);line-height:1.9">issue '
+                           f'<b style="color:{couleur}">{classe}</b><br>'
+                           f'{po.get("raison", "")}<br>rollback '
+                           f'<b>{po.get("rollback_performed", False)}</b></div>')
+            else:
+                contenu = ('<div style="font-size:12px;color:var(--faint)">'
+                           'Aucune vérification post-action : soit rien n\'a été exécuté, '
+                           'soit la fenêtre d\'observation court encore.</div>')
+            st.markdown(html_block(f"""<div class="so-panel">
+              <div class="so-ptitle">Après l'action</div>
+              <div class="so-psub">Comparaison à la ligne de base saine.</div>
+              {contenu}</div>"""), unsafe_allow_html=True)
+
+        with st.expander("Enregistrement brut"):
+            st.json(choix, expanded=False)
+
+
+# ===========================================================================
+# LE SYSTÈME — peut-on lui faire confiance ?
+# ===========================================================================
+with onglet_systeme:
+    st.markdown(html_block("""<div class="so-sec"><h2>Le système, jugé par ses propres critères</h2>
+    <span class="ln"></span></div>"""), unsafe_allow_html=True)
+
+    dataset = ana.build_dataset(decisions, incidents)
+
+    if len(dataset) < 3:
+        st.markdown(html_block("""<div class="so-empty">
+          <div class="t">Pas assez de décisions appariées</div>
+          <div class="s">Ces analyses croisent les décisions avec la vérité terrain.
+          Lancez une campagne : <code>python evaluation/run_campaign.py</code></div></div>"""),
+                    unsafe_allow_html=True)
+    else:
+        brier = ana.brier_score(dataset)
+        gauche, droite = st.columns(2)
+
+        with gauche:
+            st.markdown(html_block(f"""<div class="so-ptitle">Calibration</div>
+            <div class="so-psub">Quand il annonce 0.70, a-t-il raison 70 % du temps ?
+            Un point sous la diagonale signale un système <b>trop sûr de lui</b> — et c'est
+            cette situation qui déclenche des actions.<br>
+            Score de Brier <b>{brier:.3f}</b> · 0.25 correspondrait à une absence totale
+            d'information.</div>"""), unsafe_allow_html=True)
+            st.markdown(html_block(f'<div class="so-panel">{ana.render_calibration(dataset)}</div>'),
+                        unsafe_allow_html=True)
+
+        with droite:
+            seuil = st.slider("Seuil de confiance pour une action de risque modéré",
+                              0.40, 1.00, 0.65, 0.05)
+            r = ana.replay(dataset, max(0.0, seuil - 0.15), seuil)
+            precision = f"{r['precision_auto']:.0%}" if r["precision_auto"] is not None else "—"
+            st.markdown(html_block(f"""<div class="so-psub">
+            Rejeu des <b>{r['total']} décisions</b> déjà prises, sous ce seuil. Aucune
+            inférence n'est refaite : seule la frontière de décision se déplace, donc
+            ce n'est pas une estimation mais ce qui <b>se serait produit</b>.<br>
+            <b>{r['auto']} actions automatiques</b> dont {r['auto_faux']} erronées
+            (précision {precision}) · {r['humain']} renvoyées à un humain, dont
+            <b>{r['humain_correct']}</b> auraient pourtant été correctes.</div>"""),
+                        unsafe_allow_html=True)
+            st.markdown(html_block(
+                f'<div class="so-panel">{ana.render_tradeoff(dataset, seuil)}</div>'),
+                unsafe_allow_html=True)
+
+        sc = ana.agent_scorecard(decisions, incidents)
+        acc, des = sc["accord"], sc["desaccord"]
+        taux = lambda b: f"{b['correct'] / b['total']:.0%}" if b["total"] else "—"
+        st.write("")
+        st.markdown(html_block(f"""<div class="so-strip">
+          <div class="so-cell"><div class="so-k">Agent métriques</div>
+            <div class="so-v">{sc['metriques']['interroge']}</div>
+            <div class="so-d flat">fois interrogé</div></div>
+          <div class="so-cell"><div class="so-k">Agent journaux</div>
+            <div class="so-v">{sc['logs']['interroge']}</div>
+            <div class="so-d flat">fois interrogé</div></div>
+          <div class="so-cell"><div class="so-k">Quand ils sont d'accord</div>
+            <div class="so-v" style="color:var(--ok)">{taux(acc)}</div>
+            <div class="so-d flat">de diagnostics corrects · {acc['total']} cas</div></div>
+          <div class="so-cell"><div class="so-k">Quand ils divergent</div>
+            <div class="so-v" style="color:var(--degraded)">{taux(des)}</div>
+            <div class="so-d flat">de diagnostics corrects · {des['total']} cas</div></div>
+        </div>"""), unsafe_allow_html=True)
+        st.caption("L'écart entre ces deux dernières colonnes chiffre ce que l'architecture "
+                   "multi-agents apporte : si l'accord ne vaut pas mieux que le désaccord, "
+                   "le cloisonnement n'apporte rien.")
+
+    if RESULTS_PATH.exists():
+        res = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+        st.write("")
+        st.markdown(html_block("""<div class="so-sec"><h2>Dernière campagne</h2>
+        <span class="ln"></span></div>"""), unsafe_allow_html=True)
+        prec, ttd = res.get("precision_diagnostic"), res.get("ttd_median_s")
+        hall, sous60 = res.get("taux_hallucination"), res.get("ttd_sous_60s")
+        ecart = (prec - 0.70) * 100 if prec is not None else 0
+        st.markdown(html_block(f"""<div class="so-strip">
+          <div class="so-cell"><div class="so-k">Cause racine correcte</div>
+            <div class="so-v">{prec:.1%}</div>
+            <div class="so-d {'up' if ecart >= 0 else 'dn'}">
+              {'▲' if ecart >= 0 else '▼'} {abs(ecart):.1f} pts vs cible 70 %</div></div>
+          <div class="so-cell"><div class="so-k">Diagnostic — médiane</div>
+            <div class="so-v">{ttd:.1f} s</div>
+            <div class="so-d flat">{sous60:.0%} des cas sous 60 s</div></div>
+          <div class="so-cell"><div class="so-k">Preuves sans ancrage</div>
+            <div class="so-v" style="color:var(--degraded)">{hall:.1%}</div>
+            <div class="so-d dn">{res.get('preuves_citees', 0) - res.get('preuves_ancrees', 0)}
+              des {res.get('preuves_citees', 0)} preuves citées</div></div>
+          <div class="so-cell"><div class="so-k">Actions autonomes</div>
+            <div class="so-v">{res.get('actions_executees', 0)}</div>
+            <div class="so-d flat">{res.get('validations_humaines', 0)} renvoyées</div></div>
+        </div>"""), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Rafraîchissement
-#
-# Un opérateur ne doit pas avoir à recharger la page pour savoir si quelque
-# chose l'attend. Le rafraîchissement est explicite plutôt qu'automatique et
-# silencieux : une page qui se recharge pendant qu'on lit une décision est
-# désagréable, et pire, on peut cliquer sur autre chose que ce qu'on visait.
+# Rafraîchissement — explicite plutôt qu'automatique : une page qui se
+# recharge pendant qu'on lit une décision fait cliquer à côté.
 # ---------------------------------------------------------------------------
 st.divider()
 gauche, droite = st.columns([1, 6])

@@ -18,16 +18,31 @@ DECISIONS_LOG_PATH = pathlib.Path(__file__).parent / "decisions_log.jsonl"
 
 def log_decision(metrics_hypothesis: dict, logs_hypothesis: dict, arbiter_verdict: dict,
                   guardrail_decision: dict, action_executed: str | None,
-                  incident_id: str | None = None) -> str:
+                  incident_id: str | None = None,
+                  metrics_observed: list | None = None,
+                  logs_observed: list | None = None) -> str:
     """
     Journalise l'intégralité de la chaîne de décision pour un incident :
     ce que chaque agent a vu, ce que l'Arbitre a conclu, ce que le
     garde-fou a décidé, et l'action réellement exécutée (ou None).
+
+    `metrics_observed` / `logs_observed` : les événements d'anomalie
+    RÉELLEMENT transmis à chaque agent.
+
+    Ajout du Jour 14. Le journal contenait jusqu'ici les conclusions des
+    agents mais pas les données sur lesquelles elles reposaient. Un audit
+    ne pouvait donc pas vérifier qu'une preuve citée existait vraiment :
+    il fallait croire le score d'ancrage sur parole, alors que tout le
+    projet consiste à ne rien croire sur parole. Conserver l'entrée des
+    agents rend la vérification refaisable à la main, et permet à la
+    console de confronter chaque preuve à sa source.
     """
     decision_id = incident_id or str(uuid.uuid4())
     record = {
         "decision_id": decision_id,
         "ts": time.time(),
+        "metrics_observed": metrics_observed or [],
+        "logs_observed": logs_observed or [],
         "metrics_hypothesis": metrics_hypothesis,
         "logs_hypothesis": logs_hypothesis,
         "arbiter_verdict": arbiter_verdict,
