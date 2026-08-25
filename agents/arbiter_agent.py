@@ -109,11 +109,57 @@ avant ou après :
 }"""
 
 
+# Marqueurs des hypothèses de repli, produites lorsqu'un appel au modèle
+# échoue (délai dépassé, service injoignable, sortie inexploitable après
+# plusieurs tentatives).
+_MARQUEURS_REPLI = ("indisponible", "échec de l'analyse", "echec de l'analyse",
+                    "aucune preuve exploitable")
+
+
+def _is_fallback(hypothesis: dict) -> bool:
+    """
+    Reconnaît une hypothèse de REPLI, c'est-à-dire l'aveu qu'un agent n'a
+    pas pu travailler — à distinguer d'une hypothèse réelle mais faible.
+
+    Correctif important. Le repli porte une confiance de 0.0 mais un
+    composant « inconnu » et une preuve textuelle non vide : il ne
+    satisfaisait donc pas `_is_no_evidence`, qui exige le composant
+    « aucun ». L'arbitre le traitait par conséquent comme une hypothèse
+    CONCURRENTE, la comparait à l'hypothèse valide de l'autre agent, et
+    concluait à un désaccord.
+
+    Conséquence observée en fonctionnement : un diagnostic logs
+    parfaitement ancré, annoncé à 0.90, était ramené à 0.28 par un « faux
+    désaccord » avec un agent qui n'avait tout simplement pas répondu. Le
+    système se pénalisait lui-même pour une panne d'infrastructure.
+
+    Un agent en repli doit être traité comme ABSENT. On retombe alors sur
+    le cas mono-modalité : l'hypothèse survivante est adoptée, vérifiée
+    normalement, puis plafonnée faute de corroboration.
+    """
+    if float(hypothesis.get("confidence") or 0.0) > 0.0:
+        return False
+    texte = " ".join([
+        str(hypothesis.get("hypothesis", "")),
+        " ".join(str(e) for e in (hypothesis.get("evidence") or [])),
+    ]).lower()
+    return any(marqueur in texte for marqueur in _MARQUEURS_REPLI)
+
+
 def _is_no_evidence(hypothesis: dict) -> bool:
-    return (
+    """
+    Vrai si l'agent n'a rien à dire — soit parce que sa modalité ne
+    contenait aucune preuve (court-circuit voulu), soit parce que son
+    analyse a échoué (repli). Les deux situations appellent le même
+    traitement : ne pas faire arbitrer une hypothèse contre du vide.
+    """
+    if not hypothesis:
+        return True
+    sans_preuve = (
         hypothesis.get("confidence") == NO_EVIDENCE_CONFIDENCE
         and hypothesis.get("composant_suspecte") == NO_EVIDENCE_COMPONENT
     )
+    return sans_preuve or _is_fallback(hypothesis)
 
 
 def build_prompt(metrics_hypothesis: dict, logs_hypothesis: dict) -> str:

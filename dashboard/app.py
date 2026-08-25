@@ -49,6 +49,7 @@ from actions import execute_action, ActionExecutionError    # noqa: E402
 DECISIONS_PATH = _ROOT / "guardrails" / "decisions_log.jsonl"
 RESULTS_PATH = _ROOT / "evaluation" / "evaluation_results.json"
 GROUND_TRUTH_PATH = _ROOT / "injectors" / "ground_truth.jsonl"
+PENDING_PATH = _ROOT / "remediation" / "pending_validations.jsonl"
 PROMETHEUS_URL = "http://localhost:9090"
 HUMAN_FEEDBACK_PATH = _ROOT / "remediation" / "human_feedback.jsonl"
 
@@ -214,7 +215,12 @@ def html_block(fragment: str) -> str:
     une seule ligne : le HTML n'a pas besoin des sauts de ligne, et cela
     supprime toute ambiguïté avec la syntaxe Markdown.
     """
-    return "".join(line.strip() for line in fragment.splitlines())
+    # Les lignes sont recollées avec une ESPACE et non bout à bout : un
+    # texte réparti sur plusieurs lignes du source verrait sinon ses mots
+    # se souder (« délaidépassé »). En HTML, une espace surnuméraire entre
+    # deux balises ou dans une valeur d'attribut est sans effet, alors
+    # qu'une espace manquante dans du texte est visible immédiatement.
+    return " ".join(line.strip() for line in fragment.splitlines() if line.strip())
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict]:
@@ -246,6 +252,38 @@ def since(ts: float) -> str:
     if d < 86400:
         return f"il y a {int(d // 3600)} h"
     return f"il y a {int(d // 86400)} j"
+
+
+# Marqueurs des réponses de repli. Quand un appel au modèle échoue
+# (timeout, service injoignable, sortie inexploitable après retries), les
+# agents renvoient une hypothèse de repli déterministe plutôt que de faire
+# planter la chaîne. C'est le bon comportement — mais le résultat n'est PAS
+# un diagnostic, et il ne doit pas être présenté comme tel.
+_MARQUEURS_ECHEC = ("indisponible", "échec de l'analyse", "echec de l'analyse")
+
+
+def analyse_en_echec(item: dict) -> bool:
+    """
+    Distingue une décision réellement diagnostiquée d'une analyse qui a
+    échoué faute de réponse du modèle.
+
+    Pourquoi c'est indispensable dans l'interface : proposer « approuver le
+    redémarrage » sous un diagnostic vide demande à l'opérateur d'agir sur
+    une machine réelle sans la moindre information. C'est exactement la
+    situation où le système doit reconnaître qu'il n'a rien à dire, plutôt
+    que d'habiller un échec en décision.
+
+    Deux signaux concordants sont exigés : une confiance nulle ET un
+    diagnostic portant un marqueur de repli. Une confiance nulle seule peut
+    résulter d'une décote légitime sur une hypothèse réelle mais mal
+    étayée — cas différent, qui mérite d'être montré.
+    """
+    verdict = item.get("arbiter_verdict") or {}
+    confiance = verdict.get("final_confidence")
+    if confiance is None or float(confiance) > 0.0:
+        return False
+    texte = str(verdict.get("diagnosis", "")).lower()
+    return any(marqueur in texte for marqueur in _MARQUEURS_ECHEC)
 
 
 def extract_factors(verdict: dict) -> dict:
@@ -365,7 +403,13 @@ def log_human_feedback(record: dict) -> None:
 # ---------------------------------------------------------------------------
 maintenant = time.strftime("%H:%M:%S")
 decisions = read_jsonl(DECISIONS_PATH)
-pending = sorted(list_pending(), key=lambda p: p.get("ts", 0), reverse=True)
+_tous_en_attente = sorted(list_pending(), key=lambda p: p.get("ts", 0), reverse=True)
+# Les analyses en échec sont écartées de la file actionnable : elles ne
+# portent aucun diagnostic, donc rien à approuver. Elles restent visibles
+# dans une section distincte, car les masquer complètement reviendrait à
+# dissimuler une panne du système de supervision lui-même.
+pending = [p for p in _tous_en_attente if not analyse_en_echec(p)]
+echecs = [p for p in _tous_en_attente if analyse_en_echec(p)]
 
 derniere = max((d.get("ts", 0) for d in decisions), default=0)
 boucle_active = (time.time() - derniere) < 300 if derniere else False
@@ -384,9 +428,61 @@ st.markdown(html_block(f"""
       else 'boucle inactive · dernier signe ' + (since(derniere) if derniere else 'jamais')}
   </div>
   <div class="so-tag">profil {profil}</div>
-  <div class="so-tag so-push">{len(decisions)} décisions · rafraîchi {maintenant}</div>
+  <div class="so-tag so-push">{len(decisions)} décisions · {maintenant}</div>
 </div>
 """), unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Veille automatique
+#
+# Une console de supervision qu'il faut recharger à la main n'est pas une
+# console : on ne peut pas savoir si rien ne se passe ou si l'écran est
+# figé sur un état ancien.
+#
+# Le mécanisme ne recharge PAS la page toutes les 30 secondes. Il compare
+# une empreinte des fichiers de données (taille + date de modification) et
+# ne déclenche un rechargement que si quelque chose a réellement changé.
+# La différence est importante en usage : recharger pendant qu'un opérateur
+# lit une décision réinitialise sa position et lui fait perdre le fil, pour
+# rien la plupart du temps.
+#
+# `st.fragment(run_every=...)` n'existe qu'à partir de Streamlit 1.37 ;
+# on retombe silencieusement sur le bouton manuel si la version est plus
+# ancienne, plutôt que de faire échouer toute la page.
+# ---------------------------------------------------------------------------
+INTERVALLE_VEILLE_SECONDES = 30
+
+
+def empreinte_donnees() -> tuple:
+    """Signature bon marché des sources : évite de relire les fichiers."""
+    signature = []
+    for chemin in (DECISIONS_PATH, PENDING_PATH, GROUND_TRUTH_PATH):
+        try:
+            st_ = chemin.stat()
+            signature.append((chemin.name, st_.st_size, int(st_.st_mtime)))
+        except OSError:
+            signature.append((chemin.name, -1, -1))
+    return tuple(signature)
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=INTERVALLE_VEILLE_SECONDES)
+    def _veille():
+        actuelle = empreinte_donnees()
+        precedente = st.session_state.get("empreinte")
+        if precedente is None:
+            st.session_state["empreinte"] = actuelle
+            return
+        if actuelle != precedente:
+            st.session_state["empreinte"] = actuelle
+            st.session_state["nouveaute"] = True
+            st.rerun(scope="app")
+
+    _veille()
+    VEILLE_ACTIVE = True
+else:
+    VEILLE_ACTIVE = False
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +495,12 @@ st.markdown(html_block(f"""
 #   Le système  — puis-je lui faire confiance sur la durée ?
 # ---------------------------------------------------------------------------
 incidents = read_jsonl(GROUND_TRUTH_PATH)
-onglet_now, onglet_dossier, onglet_systeme = st.tabs(
-    ["Maintenant", "Le dossier", "Le système"])
+# L'onglet « Le système » (calibration, rejeu contrefactuel) est
+# temporairement retiré : ses analyses croisent les décisions avec la vérité
+# terrain, et n'ont de sens qu'une fois une campagne complète effectuée sur
+# une chaîne pleinement fonctionnelle. Le réintroduire avec des données
+# partielles afficherait des courbes vides ou trompeuses.
+onglet_now, onglet_dossier = st.tabs(["Maintenant", "Le dossier"])
 
 
 # ===========================================================================
@@ -438,8 +538,39 @@ with onglet_now:
           <div class="s">Le système exécute seul ce qu'il juge sûr et remonte ici tout le reste.</div>
         </div>"""), unsafe_allow_html=True)
     else:
+        # Pagination.
+        #
+        # Chaque décision dépliée occupe une hauteur d'écran entière : le
+        # face-à-face montre deux colonnes de preuves, et c'est justement ce
+        # qui permet de trancher. Empiler onze décisions en attente produit
+        # une page de plusieurs mètres où l'on ne trouve plus rien.
+        #
+        # On en affiche donc trois à la fois — assez pour comparer des cas
+        # voisins, assez peu pour rester lisible — avec une navigation
+        # explicite. Les plus récentes d'abord : une panne en cours importe
+        # davantage qu'une décision vieille d'une heure.
+        PAR_PAGE = 3
+        pages = max(1, -(-len(pending) // PAR_PAGE))
+        page = min(st.session_state.get("page_attente", 0), pages - 1)
+
+        if pages > 1:
+            nav_g, nav_c, nav_d, _ = st.columns([1, 1, 1, 4])
+            if nav_g.button("← Précédentes", disabled=(page == 0),
+                            key="prev_att", type="secondary"):
+                st.session_state["page_attente"] = page - 1
+                st.rerun()
+            nav_c.markdown(
+                html_block(f'<div style="text-align:center;font-family:\'IBM Plex Mono\';'
+                           f'font-size:11px;color:var(--dim);padding-top:9px">'
+                           f'{page * PAR_PAGE + 1}–{min((page + 1) * PAR_PAGE, len(pending))}'
+                           f' sur {len(pending)}</div>'), unsafe_allow_html=True)
+            if nav_d.button("Suivantes →", disabled=(page >= pages - 1),
+                            key="next_att", type="secondary"):
+                st.session_state["page_attente"] = page + 1
+                st.rerun()
+
         par_id = {d.get("decision_id"): d for d in decisions}
-        for item in pending:
+        for item in pending[page * PAR_PAGE:(page + 1) * PAR_PAGE]:
             verdict = item.get("arbiter_verdict") or {}
             guardrail = item.get("guardrail_decision") or {}
             factors = extract_factors(verdict)
@@ -495,6 +626,103 @@ with onglet_now:
                 time.sleep(1.0)
                 st.rerun()
             st.write("")
+
+    # -----------------------------------------------------------------------
+    # Analyses en échec
+    #
+    # Ces incidents ont bien été détectés, mais aucun diagnostic n'a pu être
+    # produit : le modèle n'a pas répondu dans le délai imparti, ou sa
+    # sortie est restée inexploitable après plusieurs tentatives. Le repli
+    # déterministe a joué son rôle — le système n'a rien inventé et n'a rien
+    # exécuté.
+    #
+    # On les présente à part, sans bouton d'action : il n'y a rien à
+    # approuver. Les afficher comme des décisions ordinaires demanderait à
+    # l'opérateur d'agir à l'aveugle ; les masquer dissimulerait une panne
+    # de la supervision elle-même.
+    # -----------------------------------------------------------------------
+    if echecs:
+        st.markdown(html_block(f"""<div class="so-sec">
+        <h2>Analyses n'ayant pas abouti</h2><span class="n">{len(echecs)}</span>
+        <span class="ln"></span></div>"""), unsafe_allow_html=True)
+
+        st.markdown(html_block("""<div class="so-story">
+        Une anomalie a été détectée, mais le modèle n'a pas répondu — délai
+        dépassé ou sortie inexploitable. <b>Aucune action n'a été exécutée
+        et aucun diagnostic n'est proposé</b> : le repli déterministe a
+        fonctionné comme prévu. Vérifiez qu'Ollama répond, puis écartez ces
+        entrées.</div>"""), unsafe_allow_html=True)
+
+        lignes = []
+        for e in echecs[:6]:
+            v = e.get("arbiter_verdict") or {}
+            lignes.append(f"""<div class="so-row">
+              <span class="so-badge b-none">non conclu</span>
+              <span style="color:var(--faint);width:86px">{since(e.get('ts', 0))}</span>
+              <span style="color:var(--dim);width:150px">{e.get('target', '—')}</span>
+              <span style="color:var(--faint);flex:1;overflow:hidden;
+                text-overflow:ellipsis;white-space:nowrap">
+                {v.get('diagnosis', 'aucun diagnostic')}</span>
+              <span style="color:var(--faint)">{e.get('validation_id', '')[:8]}</span>
+            </div>""")
+        st.markdown(html_block(f'<div style="border:1px solid var(--rule);border-radius:6px;'
+                               f'overflow:hidden;background:var(--panel);opacity:.72">'
+                               f'{"".join(lignes)}</div>'), unsafe_allow_html=True)
+
+        col_e, _ = st.columns([1.4, 5])
+        if col_e.button(f"Écarter {len(echecs)} entrée{'s' if len(echecs) > 1 else ''}", key="purge_echecs",
+                        type="secondary"):
+            for e in echecs:
+                resolve(e["validation_id"], approved=False)
+                log_human_feedback({
+                    "validation_id": e["validation_id"],
+                    "decision_id": e.get("decision_id"),
+                    "decision_humaine": "ecartee_analyse_en_echec",
+                    "statut_execution": "non_executee",
+                    "action": e.get("action"), "target": e.get("target"),
+                    "confiance_systeme": 0.0, "seuil_applique": None,
+                    "ts": time.time()})
+            n_ec = len(echecs)
+            st.info(f"{n_ec} analyse{'s' if n_ec > 1 else ''} en échec écartée{'s' if n_ec > 1 else ''}.")
+            time.sleep(1.0)
+            st.rerun()
+        st.write("")
+
+    # -----------------------------------------------------------------------
+    # Les cinq dernières décisions, en résumé
+    #
+    # Elles ne demandent rien à l'opérateur, mais leur absence poserait une
+    # question à chaque coup d'œil : le système a-t-il fait quelque chose
+    # depuis tout à l'heure ? Une ligne par décision suffit à répondre.
+    # L'instruction complète reste accessible dans l'onglet « Le dossier ».
+    # -----------------------------------------------------------------------
+    recentes = sorted(decisions, key=lambda d: d.get("ts", 0), reverse=True)[:5]
+    if recentes:
+        st.markdown(html_block("""<div class="so-sec"><h2>Ce que le système a fait</h2>
+        <span class="ln"></span></div>"""), unsafe_allow_html=True)
+
+        lignes = []
+        for d in recentes:
+            v = d.get("arbiter_verdict") or {}
+            g = d.get("guardrail_decision") or {}
+            badge = {"autoriser_auto": ("b-auto", "auto"),
+                     "validation_humaine": ("b-human", "humain"),
+                     "refuser": ("b-none", "refusé")}.get(g.get("decision", ""),
+                                                          ("b-none", g.get("decision", "—")))
+            conf = v.get("final_confidence")
+            lignes.append(f"""<div class="so-row">
+              <span class="so-badge {badge[0]}">{badge[1]}</span>
+              <span style="color:var(--faint);width:86px">{since(d.get('ts', 0))}</span>
+              <span style="color:var(--signal);width:150px">{v.get('composant_suspecte', '—')}</span>
+              <span style="width:52px;color:var(--ink)">{f'{conf:.2f}' if conf is not None else '—'}</span>
+              <span style="color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;
+                white-space:nowrap">{v.get('diagnosis', '')[:100]}</span>
+              <span style="color:var(--faint)">{d.get('action_executed') or '—'}</span>
+            </div>""")
+        st.markdown(html_block(f'<div style="border:1px solid var(--rule);border-radius:6px;'
+                               f'overflow:hidden;background:var(--panel)">{"".join(lignes)}</div>'),
+                    unsafe_allow_html=True)
+        st.caption("Instruction complète d'une décision dans l'onglet « Le dossier ».")
 
 
 # ===========================================================================
@@ -569,107 +797,20 @@ with onglet_dossier:
             st.json(choix, expanded=False)
 
 
-# ===========================================================================
-# LE SYSTÈME — peut-on lui faire confiance ?
-# ===========================================================================
-with onglet_systeme:
-    st.markdown(html_block("""<div class="so-sec"><h2>Le système, jugé par ses propres critères</h2>
-    <span class="ln"></span></div>"""), unsafe_allow_html=True)
-
-    dataset = ana.build_dataset(decisions, incidents)
-
-    if len(dataset) < 3:
-        st.markdown(html_block("""<div class="so-empty">
-          <div class="t">Pas assez de décisions appariées</div>
-          <div class="s">Ces analyses croisent les décisions avec la vérité terrain.
-          Lancez une campagne : <code>python evaluation/run_campaign.py</code></div></div>"""),
-                    unsafe_allow_html=True)
-    else:
-        brier = ana.brier_score(dataset)
-        gauche, droite = st.columns(2)
-
-        with gauche:
-            st.markdown(html_block(f"""<div class="so-ptitle">Calibration</div>
-            <div class="so-psub">Quand il annonce 0.70, a-t-il raison 70 % du temps ?
-            Un point sous la diagonale signale un système <b>trop sûr de lui</b> — et c'est
-            cette situation qui déclenche des actions.<br>
-            Score de Brier <b>{brier:.3f}</b> · 0.25 correspondrait à une absence totale
-            d'information.</div>"""), unsafe_allow_html=True)
-            st.markdown(html_block(f'<div class="so-panel">{ana.render_calibration(dataset)}</div>'),
-                        unsafe_allow_html=True)
-
-        with droite:
-            seuil = st.slider("Seuil de confiance pour une action de risque modéré",
-                              0.40, 1.00, 0.65, 0.05)
-            r = ana.replay(dataset, max(0.0, seuil - 0.15), seuil)
-            precision = f"{r['precision_auto']:.0%}" if r["precision_auto"] is not None else "—"
-            st.markdown(html_block(f"""<div class="so-psub">
-            Rejeu des <b>{r['total']} décisions</b> déjà prises, sous ce seuil. Aucune
-            inférence n'est refaite : seule la frontière de décision se déplace, donc
-            ce n'est pas une estimation mais ce qui <b>se serait produit</b>.<br>
-            <b>{r['auto']} actions automatiques</b> dont {r['auto_faux']} erronées
-            (précision {precision}) · {r['humain']} renvoyées à un humain, dont
-            <b>{r['humain_correct']}</b> auraient pourtant été correctes.</div>"""),
-                        unsafe_allow_html=True)
-            st.markdown(html_block(
-                f'<div class="so-panel">{ana.render_tradeoff(dataset, seuil)}</div>'),
-                unsafe_allow_html=True)
-
-        sc = ana.agent_scorecard(decisions, incidents)
-        acc, des = sc["accord"], sc["desaccord"]
-        taux = lambda b: f"{b['correct'] / b['total']:.0%}" if b["total"] else "—"
-        st.write("")
-        st.markdown(html_block(f"""<div class="so-strip">
-          <div class="so-cell"><div class="so-k">Agent métriques</div>
-            <div class="so-v">{sc['metriques']['interroge']}</div>
-            <div class="so-d flat">fois interrogé</div></div>
-          <div class="so-cell"><div class="so-k">Agent journaux</div>
-            <div class="so-v">{sc['logs']['interroge']}</div>
-            <div class="so-d flat">fois interrogé</div></div>
-          <div class="so-cell"><div class="so-k">Quand ils sont d'accord</div>
-            <div class="so-v" style="color:var(--ok)">{taux(acc)}</div>
-            <div class="so-d flat">de diagnostics corrects · {acc['total']} cas</div></div>
-          <div class="so-cell"><div class="so-k">Quand ils divergent</div>
-            <div class="so-v" style="color:var(--degraded)">{taux(des)}</div>
-            <div class="so-d flat">de diagnostics corrects · {des['total']} cas</div></div>
-        </div>"""), unsafe_allow_html=True)
-        st.caption("L'écart entre ces deux dernières colonnes chiffre ce que l'architecture "
-                   "multi-agents apporte : si l'accord ne vaut pas mieux que le désaccord, "
-                   "le cloisonnement n'apporte rien.")
-
-    if RESULTS_PATH.exists():
-        res = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
-        st.write("")
-        st.markdown(html_block("""<div class="so-sec"><h2>Dernière campagne</h2>
-        <span class="ln"></span></div>"""), unsafe_allow_html=True)
-        prec, ttd = res.get("precision_diagnostic"), res.get("ttd_median_s")
-        hall, sous60 = res.get("taux_hallucination"), res.get("ttd_sous_60s")
-        ecart = (prec - 0.70) * 100 if prec is not None else 0
-        st.markdown(html_block(f"""<div class="so-strip">
-          <div class="so-cell"><div class="so-k">Cause racine correcte</div>
-            <div class="so-v">{prec:.1%}</div>
-            <div class="so-d {'up' if ecart >= 0 else 'dn'}">
-              {'▲' if ecart >= 0 else '▼'} {abs(ecart):.1f} pts vs cible 70 %</div></div>
-          <div class="so-cell"><div class="so-k">Diagnostic — médiane</div>
-            <div class="so-v">{ttd:.1f} s</div>
-            <div class="so-d flat">{sous60:.0%} des cas sous 60 s</div></div>
-          <div class="so-cell"><div class="so-k">Preuves sans ancrage</div>
-            <div class="so-v" style="color:var(--degraded)">{hall:.1%}</div>
-            <div class="so-d dn">{res.get('preuves_citees', 0) - res.get('preuves_ancrees', 0)}
-              des {res.get('preuves_citees', 0)} preuves citées</div></div>
-          <div class="so-cell"><div class="so-k">Actions autonomes</div>
-            <div class="so-v">{res.get('actions_executees', 0)}</div>
-            <div class="so-d flat">{res.get('validations_humaines', 0)} renvoyées</div></div>
-        </div>"""), unsafe_allow_html=True)
-
-
 # ---------------------------------------------------------------------------
-# Rafraîchissement — explicite plutôt qu'automatique : une page qui se
-# recharge pendant qu'on lit une décision fait cliquer à côté.
+# Pied de page
 # ---------------------------------------------------------------------------
 st.divider()
 gauche, droite = st.columns([1, 6])
 if gauche.button("Actualiser", type="secondary"):
+    st.session_state.pop("empreinte", None)
     st.rerun()
-droite.caption(f"Dernière lecture à {maintenant} · "
-               f"la boucle écrit en continu dans decisions_log.jsonl")
+
+if VEILLE_ACTIVE:
+    droite.caption(
+        f"Lecture à {maintenant} · la page se met à jour d'elle-même "
+        f"lorsqu'une décision nouvelle apparaît (vérification toutes les "
+        f"{INTERVALLE_VEILLE_SECONDES} s)")
+else:
+    droite.caption(f"Lecture à {maintenant} · veille automatique indisponible "
+                   f"(Streamlit < 1.37) — utilisez le bouton")

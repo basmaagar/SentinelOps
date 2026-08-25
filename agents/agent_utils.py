@@ -151,6 +151,35 @@ def normalise_payload(payload: dict) -> dict:
     """
     payload = dict(payload)
 
+    # Réponse imbriquée d'un niveau.
+    #
+    # Constaté avec llama3.2:1b : le modèle place l'objet complet DANS le
+    # champ `hypothesis`, au lieu d'y mettre une phrase :
+    #     {"hypothesis": {"hypothesis": "...", "confidence": 0.5, ...}}
+    #
+    # Le contenu est correct, seule la profondeur est fausse. Rejeter la
+    # réponse coûtait trois générations d'une quinzaine de secondes chacune
+    # pour finir sur un repli, alors que l'information demandée était bien
+    # présente. On remonte donc l'objet imbriqué d'un niveau.
+    #
+    # La condition est stricte : on ne remonte que si l'objet interne porte
+    # au moins deux des champs attendus. Un dictionnaire quelconque trouvé
+    # dans `hypothesis` n'est pas une réponse mal emboîtée, et sera traité
+    # plus bas comme une valeur à sérialiser.
+    _CHAMPS = {"hypothesis", "evidence", "confidence", "composant_suspecte",
+               "diagnosis", "justification", "agreement_status"}
+    for cle in ("hypothesis", "diagnosis"):
+        interne = payload.get(cle)
+        if isinstance(interne, dict) and len(_CHAMPS & set(interne)) >= 2:
+            fusion = dict(interne)
+            # Les champs du niveau supérieur, s'ils existent déjà, priment :
+            # ils ont été produits explicitement, pas par emboîtement.
+            for k, v in payload.items():
+                if k != cle and v not in (None, "", [], {}):
+                    fusion[k] = v
+            payload = fusion
+            break
+
     # Alias de clés. Les petits modèles produisent régulièrement une
     # variante du nom attendu ("component", "composant"...). Renommer une
     # clé n'invente aucune information, contrairement à en fabriquer une.

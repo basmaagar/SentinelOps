@@ -179,7 +179,27 @@ def build_graph(metrics_client, metrics_model: str, logs_client, logs_model: str
     builder.add_node("arbiter", make_arbiter_node(arbiter_client, arbiter_model))
 
     builder.set_entry_point("detect")
-    builder.add_conditional_edges("detect", route_after_detect)
+    # La carte des destinations possibles est déclarée explicitement.
+    #
+    # Sans elle, le graphe s'exécute correctement — LangGraph résout les
+    # cibles au moment de l'appel — mais il ne peut pas être DESSINÉ :
+    # `get_graph()` ignore vers quels nœuds mène l'arête conditionnelle, et
+    # le rendu montre agent_metrics, agent_logs et arbiter comme des nœuds
+    # détachés, reliés à rien.
+    #
+    # Un graphe dont la représentation ne correspond pas à l'exécution est
+    # un problème de documentation, pas seulement d'esthétique : c'est le
+    # schéma qui sert à expliquer l'architecture. On déclare donc les trois
+    # issues réelles de `route_after_detect`.
+    builder.add_conditional_edges(
+        "detect",
+        route_after_detect,
+        {
+            "agent_metrics": "agent_metrics",   # anomalie -> fan-out parallèle
+            "agent_logs": "agent_logs",
+            END: END,                            # rien à signaler -> arrêt
+        },
+    )
     # Les deux arêtes convergent vers "arbiter" : LangGraph attend que les
     # DEUX agents aient terminé avant d'exécuter ce nœud (jointure native).
     builder.add_edge("agent_metrics", "arbiter")

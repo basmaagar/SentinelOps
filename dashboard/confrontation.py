@@ -118,12 +118,39 @@ def _observed_summary(observed, modalite: str) -> list[str]:
     return lignes
 
 
+# Marqueurs des hypothèses de repli — un agent dont l'appel au modèle a
+# échoué. Ils doivent rester alignés avec ceux de l'arbitre.
+_MARQUEURS_REPLI = ("indisponible", "échec de l'analyse", "echec de l'analyse",
+                    "aucune preuve exploitable")
+
+
+def _est_repli(hypothese: dict) -> bool:
+    if float(hypothese.get("confidence") or 0.0) > 0.0:
+        return False
+    texte = " ".join([str(hypothese.get("hypothesis", "")),
+                      " ".join(str(e) for e in (hypothese.get("evidence") or []))]).lower()
+    return any(m in texte for m in _MARQUEURS_REPLI)
+
+
 def _column(titre: str, hypothese: dict, observed, modalite: str,
             facteurs: dict | None, poids: float | None) -> str:
     conf_declaree = hypothese.get("confidence")
     verif = check_evidence(hypothese.get("evidence", []), observed)
     signaux = _observed_summary(observed, modalite)
     muet = not signaux
+
+    # Un agent en repli n'a pas produit d'hypothèse : il n'a pas pu
+    # travailler. L'afficher comme un diagnostic — fût-il à confiance nulle
+    # — laisserait croire qu'il a analysé les données et conclu, alors
+    # qu'il n'a rien vu du tout.
+    if _est_repli(hypothese):
+        return f"""<div class="fc-col fc-mute">
+          <div class="fc-role">{titre}</div>
+          <div class="fc-silent">Cet agent n'a pas répondu.<br>
+          <span>Délai dépassé ou sortie inexploitable. Le diagnostic ne
+          repose donc que sur l'autre modalité, et sa confiance est
+          plafonnée en conséquence — ce n'est pas un désaccord.</span>
+          </div></div>"""
 
     if muet:
         return f"""<div class="fc-col fc-mute">
@@ -239,7 +266,9 @@ CONFRONTATION_CSS = """
 .fc-col{padding:15px 18px;min-width:0;}
 .fc-col:last-child{border-left:1px solid var(--rule);}
 .fc-col:first-child{border-right:1px solid var(--rule);}
-.fc-mute{opacity:.5;}
+.fc-mute{opacity:.55;}
+.fc-silent{font-size:13px;color:var(--dim);line-height:1.5;margin-top:10px;}
+.fc-silent span{font-size:11.5px;color:var(--faint);}
 .fc-role{font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:.16em;
   text-transform:uppercase;color:var(--faint);margin-bottom:7px;}
 .fc-claim{font-family:'Space Grotesk';font-size:14.5px;font-weight:600;

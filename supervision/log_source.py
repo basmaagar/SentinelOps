@@ -14,10 +14,32 @@ sur Windows et Linux (la machine de dev est sous Windows), et la position
 est un état simple à raisonner et à tester.
 """
 
+import re
+import html
 import logging
 import pathlib
 
 logger = logging.getLogger("sentinelops.supervision.logs")
+
+# Les journaux applicatifs peuvent contenir des balises de colorisation
+# (`<span style='color: red'>WARNING</span>`). Drain3 les conserve telles
+# quelles dans ses templates, et l'Agent Journaux les cite ensuite comme
+# preuves — ce qui produit des diagnostics illisibles et pollue la
+# correspondance d'ancrage avec des mots de balisage.
+#
+# On nettoie donc à la SOURCE, avant toute extraction de motifs : c'est le
+# seul endroit où la correction s'applique une fois pour toutes, quel que
+# soit le consommateur en aval.
+_BALISES = re.compile(r"<[^>]{1,200}>")
+_ESPACES = re.compile(r"\s{2,}")
+
+
+def nettoyer_ligne(ligne: str) -> str:
+    """Retire le balisage HTML et normalise les espaces."""
+    sans_balises = _BALISES.sub("", ligne)
+    return _ESPACES.sub(" ", html.unescape(sans_balises)).strip()
+
+
 
 
 class FileLogTailer:
@@ -76,7 +98,8 @@ class FileLogTailer:
         consumed = chunk[: last_newline + 1]
         self._position += len(consumed.encode("utf-8"))
 
-        return [line for line in consumed.splitlines() if line.strip()]
+        lignes = (nettoyer_ligne(line) for line in consumed.splitlines())
+        return [line for line in lignes if line]
 
 
 # ---------------------------------------------------------------------------

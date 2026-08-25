@@ -1,0 +1,22 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	detect(detect)
+	agent_metrics(agent_metrics)
+	agent_logs(agent_logs)
+	arbiter(arbiter)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> detect;
+	agent_logs --> arbiter;
+	agent_metrics --> arbiter;
+	detect -.-> __end__;
+	detect -.-> agent_logs;
+	detect -.-> agent_metrics;
+	arbiter --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
