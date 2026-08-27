@@ -30,10 +30,13 @@ REGLES IMPERATIVES :
    N'invente jamais de nom, n'extrais jamais un mot d'un nom de métrique.
    Le contexte ci-dessous indique à quel composant chaque métrique se rattache.
 2. "hypothesis" doit décrire un MÉCANISME, pas répéter l'observation.
-   MAUVAIS : "la métrique de latence est anormale" (constat, sans valeur)
+   Une bonne hypothèse répond à « qu'est-ce qui, dans le système, produit
+   cet écart ? » — pas à « qu'est-ce que j'observe ? ».
+   Appuie-toi sur les causes listées dans le CONTEXTE ci-dessous, qui
+   correspondent aux métriques réellement en anomalie. Ne reprends aucune
+   cause concernant une métrique absente des données.
+   MAUVAIS : "la métrique de latence est anormale" (constat, sans mécanisme)
    MAUVAIS : "le composant injectee est responsable" (nom inventé)
-   BON     : "la dépendance externe sature et ne répond plus dans son délai"
-   BON     : "des fichiers temporaires s'accumulent et remplissent le volume"
 3. "evidence" est une LISTE de chaînes. Chaque preuve cite une métrique
    RÉELLEMENT présente ci-dessous avec sa valeur. N'invente aucune valeur.
 4. "confidence" est un nombre décimal entre 0.0 et 1.0, sans guillemets.

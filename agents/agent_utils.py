@@ -11,6 +11,7 @@ celui des agents d'investigation (AgentHypothesis).
 """
 
 import json
+import unicodedata
 import logging
 
 from pydantic import BaseModel, ValidationError
@@ -130,6 +131,21 @@ _PLACEHOLDER_MARKERS = (
     "citation exacte d une metrique", "citation exacte d un template",
     "seconde citation", "phrase courte decrivant la cause",
     "nom du composant", "citation exacte",
+    # Exemples d'hypothèses « correctes » de la troisième version des
+    # prompts. Ils ont été retirés des consignes, mais le filet reste :
+    # les modèles recopiaient ces phrases telles quelles, y compris quand
+    # l'anomalie portait sur une tout autre métrique — produisant un
+    # diagnostic parfaitement formulé et sans aucun rapport avec les
+    # données observées.
+    #
+    # C'est le troisième gabarit successivement recopié : chevrons, puis
+    # exemples de format, puis exemples d'hypothèses. La leçon est stable —
+    # tout ce qu'on montre à un petit modèle est susceptible d'être
+    # restitué, et seule une vérification en aval s'en protège.
+    "la dependance externe sature et ne repond plus dans son delai",
+    "des fichiers temporaires s accumulent et remplissent le volume",
+    "les appels vers la dependance externe depassent leur delai",
+    "l application signale un remplissage anormal de son volume",
 )
 
 
@@ -197,6 +213,29 @@ def normalise_payload(payload: dict) -> dict:
         if source in payload and target not in payload:
             payload[target] = payload.pop(source)
 
+    # Champ `hypothesis` manquant alors que des preuves sont présentes.
+    #
+    # Constaté avec llama3.2:1b : la réponse contient `composant_suspecte`,
+    # `evidence` et `confidence`, mais pas la phrase d'hypothèse. L'agent a
+    # donc bien travaillé — ses preuves citent des données réelles — mais il
+    # n'a pas formulé de cause.
+    #
+    # Rejeter la réponse coûtait trois générations d'une douzaine de
+    # secondes pour finir sur un repli qui perd AUSSI les preuves. On
+    # conserve donc ce qui a été produit, en signalant explicitement
+    # l'absence de formulation plutôt qu'en inventant une phrase.
+    #
+    # La confiance déclarée est réduite de moitié : un agent qui énumère
+    # des observations sans en tirer de cause n'a accompli que la moitié de
+    # sa tâche, et son score doit le refléter. Ce n'est pas une pénalité
+    # arbitraire, c'est la traduction d'une réponse incomplète.
+    if not payload.get("hypothesis") and payload.get("evidence"):
+        payload["hypothesis"] = ("Cause non formulée par l'agent — seules des "
+                                 "observations ont été produites")
+        confiance_partielle = payload.get("confidence")
+        if isinstance(confiance_partielle, (int, float)):
+            payload["confidence"] = float(confiance_partielle) * 0.5
+
     # Champ composant manquant : constaté systématiquement avec
     # llama3.2:1b, qui produit hypothesis + evidence + confidence mais
     # omet le composant. Trois tentatives échouaient sur cette seule
@@ -257,7 +296,12 @@ def contains_placeholder(payload: dict) -> bool:
     éviter. On la traite donc comme une réponse invalide, ce qui déclenche
     une nouvelle tentative.
     """
-    blob = json.dumps(payload, ensure_ascii=False).lower()
+    # Les accents sont retirés avant comparaison. Le modèle produit
+    # « la dépendance externe sature », tandis que les marqueurs sont
+    # écrits sans accents : une comparaison littérale échouerait
+    # silencieusement sur le cas même qu'elle doit attraper.
+    brut = json.dumps(payload, ensure_ascii=False).lower()
+    blob = unicodedata.normalize("NFKD", brut).encode("ascii", "ignore").decode()
     return any(marker in blob for marker in _PLACEHOLDER_MARKERS)
 
 

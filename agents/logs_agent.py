@@ -37,11 +37,13 @@ Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après :
 REGLES IMPERATIVES :
 1. "composant_suspecte" doit valoir EXACTEMENT l'un de : __COMPOSANTS__.
    Le contexte ci-dessous indique quel composant produit chaque type de message.
-2. "hypothesis" doit décrire un MÉCANISME dans le système supervisé.
+2. "hypothesis" doit décrire un MÉCANISME dans le système supervisé, et
+   non commenter le message lui-même.
+   Appuie-toi sur les causes listées dans le CONTEXTE ci-dessous, qui
+   correspondent aux messages réellement présents. Ne reprends aucune cause
+   concernant un type de message absent des données.
    MAUVAIS : "le template de log est une erreur de formatage" (parle du log, pas du système)
    MAUVAIS : "les templates de logs sont des faux" (ne dit rien du système)
-   BON     : "les appels vers la dépendance externe dépassent leur délai"
-   BON     : "l'application signale un remplissage anormal de son volume"
 3. "evidence" est une LISTE de chaînes. Chaque preuve cite un template
    RÉELLEMENT présent ci-dessous. N'invente aucun message.
 4. Un template marqué "inédit" apparaît pour la première fois : c'est un
