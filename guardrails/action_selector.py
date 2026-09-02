@@ -33,24 +33,21 @@ from component_inventory import resolve_component, UNKNOWN_COMPONENT
 
 COMPONENT_ACTION_MAP: dict[str, str] = {
     "target-app": "restart_container",
-    # Correctif Jour 13. `scale_replica` était initialement rattaché ici,
-    # mais il s'appuie sur l'API Docker Swarm (`services.scale`), absente
-    # d'un environnement `docker compose` classique : toute tentative
-    # échouait avec « This node is not a swarm manager ». Le garde-fou
-    # autorisait donc correctement l'action, mais elle n'était jamais
-    # exécutée — la boucle de remédiation restait non démontrée.
+    # Rétabli au Jour 14. `scale_replica` avait été temporairement remplacé
+    # par un redémarrage parce qu'il s'appuyait sur l'API Docker Swarm,
+    # absente d'un environnement `docker compose` classique : le garde-fou
+    # autorisait l'action, mais elle échouait systématiquement.
     #
-    # Le redémarrage du conteneur applicatif est une remédiation réelle
-    # pour une dégradation de dépendance : il réinitialise l'état de
-    # connexion du client (pool de connexions, disjoncteur), ce qui est une
-    # action d'exploitation courante face à une dépendance lente. Elle est
-    # de surcroît exécutable dans l'environnement du prototype.
+    # Deux changements l'ont rendue exécutable : `dependency-service` est
+    # devenu un conteneur réel (sans port publié ni nom figé, les deux
+    # obstacles à la mise à l'échelle sous Compose), et l'exécution passe
+    # désormais par `docker compose up --scale` plutôt que par Swarm.
     #
-    # `scale_replica` reste dans la liste blanche du garde-fou : la
-    # politique de risque associée est écrite et testée, seule son
-    # exécution dépend d'un environnement Swarm. À mentionner comme limite
-    # d'environnement, et non comme fonctionnalité absente.
-    "dependency-service": "restart_container",
+    # Le rattachement est aussi le plus juste sémantiquement : face à une
+    # dépendance saturée, ajouter de la capacité est la réponse naturelle,
+    # et c'est une action sans interruption et exactement annulable — d'où
+    # son classement en risque faible et son seuil de confiance plus bas.
+    "dependency-service": "scale_replica",
 }
 
 

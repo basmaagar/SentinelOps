@@ -72,6 +72,33 @@ METRIC_CONTEXT: dict[str, dict] = {
         ],
         "consequence": "dépassement du SLA, effet de file d'attente en amont",
     },
+    "latence_dependance_ms": {
+        "mesure": ("temps réellement écoulé sur le dernier appel vers la "
+                   "dépendance externe, attente de capacité comprise"),
+        "unite": "ms",
+        "normal": "20 à 50 ms lorsque la dépendance n'est pas saturée",
+        "composant": "dependency-service",
+        "causes": [
+            "capacité de traitement de la dépendance dépassée par la charge",
+            "trop d'appels concurrents pour le nombre de répliques disponibles",
+            "dépendance elle-même ralentie",
+        ],
+        "consequence": ("file d'attente côté appelant, dépassement du SLA, "
+                        "propagation de la lenteur en amont"),
+    },
+    "appels_en_attente": {
+        "mesure": "nombre d'appels vers la dépendance en cours de traitement",
+        "unite": "appels",
+        "normal": "0 à 2 en régime nominal",
+        "composant": "dependency-service",
+        "causes": [
+            "afflux d'appels simultanés",
+            "dépendance qui ne libère pas assez vite ses créneaux",
+        ],
+        "consequence": ("accumulation d'appels en attente ; une valeur élevée "
+                        "accompagnée d'une latence élevée signale une saturation "
+                        "de capacité, et non une lenteur unitaire"),
+    },
     "latence_p95_ms": {
         "mesure": "latence applicative au 95e centile",
         "unite": "ms",

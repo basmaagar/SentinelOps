@@ -16,6 +16,10 @@ import os
 import time
 import random
 import logging
+import threading
+import json as _json
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 
 from fastapi import FastAPI, Response
@@ -224,21 +228,99 @@ def inject_latency_start(extra_ms: int = 300, duration_seconds: int = 30):
     return {"status": "latency_injection_started", "extra_ms": extra_ms, "duration_seconds": duration_seconds}
 
 
+# --- Dépendance externe réelle (Jour 15) ---
+#
+# Adresse du conteneur `dependency-service`. Si la variable est absente ou
+# le service injoignable, on retombe sur la simulation locale : le banc
+# d'essai reste utilisable sans le nouveau conteneur, et les campagnes
+# antérieures restent comparables.
+DEPENDENCY_URL = os.getenv("DEPENDENCY_URL", "").rstrip("/")
+
+# Latence RÉELLEMENT observée sur le dernier appel à la dépendance.
+#
+# C'est la métrique qui rend l'action `scale_replica` démontrable. Elle ne
+# reflète pas une injection déclarée mais une mesure : quand la dépendance
+# sature, ses appels attendent leur tour et cette valeur monte. Quand on
+# ajoute une réplique, la capacité double et la valeur redescend — la
+# vérification post-action peut donc constater une amélioration réelle,
+# et non l'expiration d'une fenêtre d'injection.
+DEPENDENCY_LATENCY_GAUGE = Gauge(
+    "app_dependency_latency_ms",
+    "Latence observée sur le dernier appel à la dépendance externe (ms)"
+)
+
+# Appels en cours vers la dépendance. Utile pour distinguer, à la lecture,
+# une latence due à la saturation d'une latence due à une lenteur unitaire.
+DEPENDENCY_INFLIGHT_GAUGE = Gauge(
+    "app_dependency_inflight",
+    "Nombre d'appels vers la dépendance en cours de traitement"
+)
+_inflight_lock = threading.Lock()
+_inflight = {"n": 0}
+
+
+def _inflight_delta(delta: int) -> None:
+    with _inflight_lock:
+        _inflight["n"] = max(0, _inflight["n"] + delta)
+        DEPENDENCY_INFLIGHT_GAUGE.set(_inflight["n"])
+
+
 @app.get("/dependency-call")
 def dependency_call():
     """
-    Simule un appel à une dépendance externe. Latence de base réaliste
-    (20-50ms) + latence injectée si la fenêtre est active.
+    Appelle la dépendance externe et mesure le temps réellement écoulé.
+
+    Deux modes :
+
+    1. `DEPENDENCY_URL` défini — l'appel part sur le réseau vers le
+       conteneur `dependency-service`, dont la capacité de traitement est
+       finie. Sous charge concurrente, les appels au-delà de cette capacité
+       attendent, et la latence mesurée augmente. C'est ce mécanisme qui
+       donne un effet réel à la mise à l'échelle.
+
+    2. Sinon — simulation locale, comportement d'origine conservé.
+
+    La latence injectée déclarée (`extra_ms`) reste transmise à la
+    dépendance : elle permet de provoquer une dégradation sans charge,
+    utile pour tester la détection seule. Mais c'est la latence MESURÉE,
+    exposée dans `app_dependency_latency_ms`, qui sert de signal — parce
+    qu'elle seule redescend lorsque la remédiation fonctionne.
     """
     with track_latency("/dependency-call"):
-        base_latency = random.uniform(0.02, 0.05)
         extra = 0.0
         if time.time() < _latency_injection_state["end_ts"]:
             extra = _latency_injection_state["extra_ms"] / 1000.0
         else:
             LATENCY_INJECTION_GAUGE.set(0)  # fenêtre expirée : on remet le gauge à 0
-        time.sleep(base_latency + extra)
-        total_ms = round((base_latency + extra) * 1000, 1)
+
+        debut = time.perf_counter()
+        instance = "local"
+        _inflight_delta(+1)
+        try:
+            if DEPENDENCY_URL:
+                try:
+                    query = urllib.parse.urlencode({"extra_ms": int(extra * 1000)})
+                    # Le délai couvre la latence injectée maximale plus une
+                    # marge pour l'attente de capacité côté dépendance.
+                    with urllib.request.urlopen(
+                            f"{DEPENDENCY_URL}/call?{query}", timeout=15.0) as reponse:
+                        charge = _json.loads(reponse.read().decode("utf-8"))
+                    instance = charge.get("instance", "?")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"DependencyUnreachable: repli local ({exc})")
+                    time.sleep(random.uniform(0.02, 0.05) + extra)
+            else:
+                time.sleep(random.uniform(0.02, 0.05) + extra)
+        finally:
+            _inflight_delta(-1)
+
+        # Temps réellement écoulé, attente de capacité comprise. C'est la
+        # seule valeur qui reflète l'état de la dépendance ; celle qu'elle
+        # rapporte elle-même ignore le temps passé dans la file d'attente
+        # côté appelant.
+        total_ms = round((time.perf_counter() - debut) * 1000, 1)
+        DEPENDENCY_LATENCY_GAUGE.set(total_ms)
+
         if total_ms > 200:
             logger.error(f"DependencyTimeout: call exceeded SLA latency_ms={total_ms}")
-        return {"status": "dependency_ok", "latency_ms": total_ms}
+        return {"status": "dependency_ok", "latency_ms": total_ms, "instance": instance}

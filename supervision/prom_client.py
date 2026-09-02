@@ -47,6 +47,17 @@ DEFAULT_QUERIES: dict[str, str] = {
     "disque_injecte_mb": "app_disk_injection_active_mb",
     "memoire_injectee_mb": "app_memory_injection_active_mb",
     "latence_injectee_ms": "app_latency_injection_active_ms",
+    # Latence RÉELLEMENT observée sur les appels à la dépendance (Jour 15).
+    #
+    # C'est la métrique qui rend la mise à l'échelle démontrable : elle
+    # monte quand la dépendance sature, et redescend quand on ajoute une
+    # réplique. `latence_injectee_ms`, elle, ne reflète qu'une fenêtre
+    # d'injection déclarée — elle retombe à zéro à l'expiration de cette
+    # fenêtre, indépendamment de toute action corrective. Une vérification
+    # post-action fondée sur elle constaterait donc une amélioration sans
+    # lien de cause à effet avec l'action exécutée.
+    "latence_dependance_ms": "app_dependency_latency_ms",
+    "appels_en_attente": "app_dependency_inflight",
     # Latence applicative observée (p95 sur 30s) — la vraie métrique de
     # dégradation, indépendante du fait qu'une injection soit déclarée.
     #

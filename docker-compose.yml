@@ -12,6 +12,14 @@ services:
     # main comme dans les tests, et le TTD ne serait pas mesurable.
     volumes:
       - ./logs:/app/logs
+    environment:
+      # Adresse de la dépendance réelle. Si la variable est absente ou le
+      # service injoignable, target-app retombe sur sa simulation locale :
+      # les injecteurs et la vérité terrain continuent de fonctionner à
+      # l'identique, sans dépendre du nouveau conteneur.
+      DEPENDENCY_URL: "http://dependency-service:8000"
+    depends_on:
+      - dependency-service
     # healthcheck : permet aux injecteurs (Jour 2) de vérifier que l'app est prête
     # avant de déclencher une panne, évitant des faux résultats de test.
     healthcheck:
@@ -19,6 +27,45 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+
+  # --- Dépendance externe simulée (Jour 14) ---
+  #
+  # Service RÉEL, et non plus simulé à l'intérieur de target-app. C'est ce
+  # qui rend l'action `scale_replica` exécutable : sans conteneur, il n'y
+  # avait rien à mettre à l'échelle, et l'implémentation d'origine
+  # s'appuyait sur l'API Docker Swarm, absente ici.
+  #
+  # Trois points volontaires :
+  #   - AUCUN port publié : c'est la condition pour que
+  #     `docker compose up -d --scale dependency-service=N` fonctionne.
+  #     Un port fixe sur l'hôte provoquerait un conflit dès la 2e réplique.
+  #     Une dépendance interne n'a de toute façon pas à être exposée.
+  #   - AUCUN container_name : Compose refuse de mettre à l'échelle un
+  #     service dont le nom de conteneur est figé.
+  #   - `deploy.replicas` fixe l'état initial ; l'action de remédiation le
+  #     modifie ensuite, et le rollback y revient.
+  dependency-service:
+    build: ./dependency
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+    environment:
+      # Capacité de traitement simultané par réplique.
+      #
+      # Fixée à 2 après mesure. La latence de base oscille naturellement
+      # entre 35 et 85 ms : pour qu'une saturation soit détectable par un
+      # z-score, elle doit produire un écart largement supérieur à ce
+      # bruit. Avec une capacité de 4 et 12 appels concurrents, la file
+      # restait trop courte et la latence montait à peine au-dessus de la
+      # variation normale.
+      #
+      # À 2 par réplique, 20 appels concurrents forment une file de dix
+      # profondeurs : la latence dépasse 300 ms, soit un signal net. Et le
+      # passage à 2 répliques divise cette file par deux, donc l'effet de
+      # la remédiation est lui aussi mesurable.
+      DEPENDENCY_CONCURRENCY: "2"
 
   # --- Monitoring : collecte des métriques ---
   prometheus:
