@@ -67,6 +67,56 @@ services:
       # la remédiation est lui aussi mesurable.
       DEPENDENCY_CONCURRENCY: "2"
 
+  # --- Landing page (page d'accueil du projet) ---
+  #
+  # Fichier statique autonome, servi par Nginx. Aucune dépendance avec le
+  # reste de la stack : elle peut être arrêtée ou modifiée sans effet sur
+  # les autres services. Le seul lien est un bouton qui ouvre le dashboard
+  # sur son port publié (8501), depuis le navigateur de l'utilisateur — et
+  # non depuis l'intérieur du réseau Docker.
+  landing:
+    build:
+      context: .
+      dockerfile: Dockerfile.landing
+    container_name: sentinelops-landing
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  # --- Console de supervision (dashboard Streamlit) ---
+  #
+  # Deux montages proviennent d'une contrainte réelle du dashboard :
+  #   - les fichiers JSONL du projet sont lus directement depuis le disque,
+  #     pas via une API. Chaque dossier producteur (guardrails, injectors,
+  #     remediation, evaluation) est donc monté individuellement, plutôt
+  #     que tout le projet, pour limiter ce que le conteneur peut voir et
+  #     modifier.
+  #   - le socket Docker de l'hôte est monté en lecture-écriture : c'est ce
+  #     qui permet au bouton "Approuver" de la console d'exécuter
+  #     réellement un redémarrage de conteneur sur l'hôte. Sans ce socket,
+  #     `docker.from_env()` échouerait à l'intérieur du conteneur.
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard_ctx/Dockerfile
+    container_name: sentinelops-dashboard
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    volumes:
+      - ./guardrails:/app/guardrails
+      - ./injectors:/app/injectors
+      - ./remediation:/app/remediation
+      - ./evaluation:/app/evaluation
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Le dashboard interroge Prometheus pour la frise temporelle ; à
+      # l'intérieur du réseau Docker, il s'adresse au service par son nom,
+      # pas par localhost.
+      PROMETHEUS_URL: "http://prometheus:9090"
+    depends_on:
+      - prometheus
+
   # --- Monitoring : collecte des métriques ---
   prometheus:
     image: prom/prometheus:v2.54.1

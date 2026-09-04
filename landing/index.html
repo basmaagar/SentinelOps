@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SentinelOps — Le modèle propose, le code décide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   SentinelOps — landing page.
+
+   Fichier autonome, sans dépendance avec le reste du projet : aucun
+   import Python, aucun fichier partagé. Il peut être supprimé ou modifié
+   sans le moindre effet sur le dashboard Streamlit existant. Le seul
+   point de contact entre les deux est le lien de sortie (voir
+   DASHBOARD_URL dans le script), qui pointe vers le serveur Streamlit
+   déjà en place.
+   ===================================================================== */
+:root{
+  --ground:#0B0E1A; --panel:#141A2E; --raise:#1C2340; --rule:#2A3454;
+  --ink:#E4E8F7; --dim:#7C87AD; --faint:#4E5878;
+  --signal:#7C9CF5; --decide:#F0A93B; --degraded:#E0637F; --ok:#5FD3A6;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans',sans-serif;
+  overflow-x:hidden;
+}
+.mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;}
+a{color:inherit;text-decoration:none;}
+
+.progress{position:fixed;top:0;left:0;height:2px;background:var(--signal);
+  width:0%;z-index:100;transition:width .1s linear;}
+
+/* ============================================================ HERO */
+.hero{
+  min-height:100vh; position:relative; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; overflow:hidden;
+  padding:100px 32px 60px;
+}
+.hero-glow{
+  position:absolute; top:6%; left:50%; transform:translateX(-50%);
+  width:1000px; height:560px; z-index:0; pointer-events:none;
+  background:radial-gradient(ellipse, rgba(124,156,245,.15), transparent 70%);
+}
+
+.hero-pipe{
+  position:absolute; top:64px; left:0; right:0;
+  display:flex; justify-content:center; align-items:center;
+  z-index:0; opacity:0;
+  animation:pipeFadeIn 1.4s ease-out .3s forwards;
+}
+@keyframes pipeFadeIn{to{opacity:.14;}}
+.hero-pipe .node{
+  font-family:'IBM Plex Mono'; font-size:9.5px; color:var(--signal);
+  border:1px solid var(--signal); border-radius:5px; padding:6px 12px;
+  white-space:nowrap;
+}
+.hero-pipe .arrow{width:26px;height:1px;background:var(--signal);}
+@media (max-width:900px){ .hero-pipe{display:none;} }
+
+.hero-tag{
+  font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--signal);
+  border:1px solid #2C3970; background:rgba(124,156,245,.06);
+  border-radius:20px; padding:6px 16px; margin-bottom:28px;
+  position:relative; z-index:2;
+  opacity:0; animation:riseIn .7s ease-out .1s forwards;
+}
+.hero-title{
+  font-family:'Space Grotesk'; font-weight:700; font-size:clamp(34px,5.6vw,56px);
+  line-height:1.12; letter-spacing:-.02em; max-width:840px; text-align:center;
+  position:relative; z-index:2; margin-bottom:22px;
+  opacity:0; animation:riseIn .7s ease-out .25s forwards;
+}
+.hero-title em{font-style:normal;color:var(--signal);}
+.hero-sub{
+  font-size:17px; color:var(--dim); max-width:560px; line-height:1.6;
+  text-align:center; position:relative; z-index:2; margin-bottom:44px;
+  opacity:0; animation:riseIn .7s ease-out .4s forwards;
+}
+.hero-ctas{
+  display:flex; gap:14px; position:relative; z-index:2; margin-bottom:64px;
+  opacity:0; animation:riseIn .7s ease-out .55s forwards;
+}
+@keyframes riseIn{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+
+.btn{
+  font-family:'Space Grotesk'; font-weight:600; font-size:14.5px;
+  padding:13px 26px; border-radius:6px; cursor:pointer; border:1px solid transparent;
+  transition:transform .15s ease, box-shadow .15s ease, background .15s ease;
+  display:inline-flex; align-items:center; gap:8px;
+}
+.btn-primary{background:var(--signal); color:#0B0E1A;}
+.btn-primary:hover{transform:translateY(-1px); box-shadow:0 6px 22px rgba(124,156,245,.28);}
+.btn-ghost{background:transparent; border-color:var(--rule); color:var(--ink);}
+.btn-ghost:hover{border-color:var(--signal); color:var(--signal);}
+
+.stat-row{
+  display:flex; flex-wrap:wrap; gap:0; position:relative; z-index:2;
+  border:1px solid var(--rule); border-radius:10px; overflow:hidden;
+  background:rgba(20,26,46,.6); backdrop-filter:blur(6px);
+  opacity:0; animation:riseIn .8s ease-out .7s forwards;
+}
+.stat{padding:22px 38px; text-align:left; border-right:1px solid var(--rule); flex:1; min-width:150px;}
+.stat:last-child{border-right:none;}
+.stat-k{
+  font-family:'IBM Plex Mono'; font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--faint); margin-bottom:8px;
+}
+.stat-v{font-family:'Space Grotesk'; font-size:32px; font-weight:700; letter-spacing:-.02em;}
+.stat-v.ok{color:var(--ok);} .stat-v.deg{color:var(--degraded);}
+.stat-d{font-size:11px; color:var(--dim); margin-top:4px;}
+
+.scrolldown{
+  position:relative; margin-top:44px; font-family:'IBM Plex Mono'; font-size:10px;
+  color:var(--faint); letter-spacing:.14em; text-transform:uppercase; z-index:2;
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  opacity:0; animation:riseIn .8s ease-out .95s forwards;
+  cursor:pointer; background:none; border:none;
+}
+.scrolldown .line{width:1px;height:32px;background:linear-gradient(var(--rule),transparent);
+  position:relative; overflow:hidden;}
+.scrolldown .line::after{
+  content:''; position:absolute; top:-32px; left:0; width:100%; height:100%;
+  background:linear-gradient(var(--signal),transparent);
+  animation:lineFlow 2s ease-in-out infinite;
+}
+@keyframes lineFlow{0%{top:-32px;}100%{top:32px;}}
+
+/* ==================================================== STORY / SCROLL */
+.story{padding:140px 32px 60px; max-width:900px; margin:0 auto;}
+.story-eyebrow{
+  font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.18em;
+  text-transform:uppercase; color:var(--faint); text-align:center; margin-bottom:14px;
+}
+.story-title{
+  font-family:'Space Grotesk'; font-size:clamp(26px,3.6vw,34px); font-weight:700;
+  text-align:center; margin-bottom:100px; letter-spacing:-.01em;
+}
+.reveal{opacity:0; transform:translateY(0);}
+.reveal.eyebrow{transform:translateY(8px);}
+
+.step{
+  display:grid; grid-template-columns:64px 1fr; gap:28px;
+  margin-bottom:8px; position:relative;
+}
+.step-rail{position:relative; display:flex; justify-content:center;}
+.step-dot{
+  width:12px; height:12px; border-radius:50%; background:var(--raise);
+  border:2px solid var(--rule); margin-top:6px; z-index:2;
+  transition:background .5s ease, border-color .5s ease, box-shadow .5s ease;
+}
+.step-dot.active{background:var(--signal); border-color:var(--signal);
+  box-shadow:0 0 0 4px rgba(124,156,245,.15);}
+.step-dot.ok{background:var(--ok); border-color:var(--ok);
+  box-shadow:0 0 0 4px rgba(95,211,166,.15);}
+.step-line{position:absolute; top:20px; bottom:-40px; width:1px; background:var(--rule);
+  overflow:hidden;}
+.step-line-fill{
+  position:absolute; top:0; left:0; width:100%; height:0%;
+  background:var(--signal); transition:height .8s ease;
+}
+.step-body{padding-bottom:80px;}
+.step-tag{
+  font-family:'IBM Plex Mono'; font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--signal); margin-bottom:8px;
+}
+.step-tag.ok{color:var(--ok);}
+.step-h{font-family:'Space Grotesk'; font-size:clamp(18px,2.4vw,21px); font-weight:600; margin-bottom:10px;}
+.step-p{color:var(--dim); font-size:14.5px; line-height:1.65; max-width:520px; margin-bottom:18px;}
+.step-card{
+  background:var(--panel); border:1px solid var(--rule); border-radius:8px;
+  padding:16px 18px; font-family:'IBM Plex Mono'; font-size:12px; color:var(--dim);
+  max-width:520px; line-height:1.8;
+}
+.step-card .k{color:var(--signal);}
+.step-card .v{color:var(--ink);}
+.step-card .warn{color:var(--degraded);}
+.step-card.ok{border-color:#1F4A3C;}
+.step-card .go{color:var(--ok);}
+
+.step{opacity:0; transform:translateY(24px); transition:opacity .7s ease, transform .7s ease;}
+.step.in-view{opacity:1; transform:none;}
+
+/* ============================================================ FOOTER */
+.landing-footer{
+  padding:90px 32px 70px; text-align:center; border-top:1px solid var(--rule);
+  margin-top:40px;
+}
+.footer-h{font-family:'Space Grotesk'; font-size:26px; font-weight:700; margin-bottom:14px;}
+.footer-p{color:var(--dim); font-size:14px; max-width:460px; margin:0 auto 32px; line-height:1.6;}
+.footer-meta{
+  margin-top:50px; font-family:'IBM Plex Mono'; font-size:10.5px; color:var(--faint);
+  display:flex; justify-content:center; gap:22px; flex-wrap:wrap;
+}
+</style>
+</head>
+<body>
+
+<div class="progress" id="progressBar"></div>
+
+<section class="hero">
+  <div class="hero-glow"></div>
+
+  <div class="hero-pipe">
+    <div class="node">détection</div><div class="arrow"></div>
+    <div class="node">agent métriques</div><div class="arrow"></div>
+    <div class="node">agent journaux</div><div class="arrow"></div>
+    <div class="node">arbitre</div><div class="arrow"></div>
+    <div class="node">garde-fou</div>
+  </div>
+
+  <div class="hero-tag">SentinelOps · AIOps multi-agents</div>
+  <h1 class="hero-title">Le modèle propose,<br><em>le code décide.</em></h1>
+  <p class="hero-sub">Un système multi-agents qui diagnostique les pannes d'infrastructure —
+    et vérifie, en code, chaque affirmation qu'il produit avant d'agir.</p>
+
+  <div class="hero-ctas">
+    <a class="btn btn-primary" href="#" id="ctaDashboard">Voir le système en action →</a>
+    <a class="btn btn-ghost" href="#story">Lire l'architecture</a>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-k">Précision du diagnostic</div>
+      <div class="stat-v ok mono"><span data-count="90.5" data-suffix="%">0%</span></div>
+      <div class="stat-d">objectif : 70%</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Temps de diagnostic</div>
+      <div class="stat-v mono"><span data-count="37.6" data-suffix="s">0s</span></div>
+      <div class="stat-d">médiane · objectif : &lt;60s</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Preuves sans ancrage</div>
+      <div class="stat-v deg mono"><span data-count="11.6" data-suffix="%">0%</span></div>
+      <div class="stat-d">détecté et décoté</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Actions irréversibles</div>
+      <div class="stat-v ok mono"><span data-count="0" data-suffix="">0</span></div>
+      <div class="stat-d">sur 21 diagnostics</div>
+    </div>
+  </div>
+
+  <button class="scrolldown" id="scrollCue" aria-label="Défiler vers le récit">
+    <span>Défiler</span><div class="line"></div>
+  </button>
+</section>
+
+<section class="story" id="story">
+  <div class="story-eyebrow reveal eyebrow">Un incident, du début à la fin</div>
+  <h2 class="story-title reveal">Ce qui s'est réellement passé</h2>
+
+  <div class="step" data-step="1">
+    <div class="step-rail">
+      <div class="step-dot"></div>
+      <div class="step-line"><div class="step-line-fill"></div></div>
+    </div>
+    <div class="step-body">
+      <div class="step-tag">01 · Détection</div>
+      <div class="step-h">Une anomalie confirmée, sans aucune IA</div>
+      <div class="step-p">Un z-score glissant repère l'écart sur la dépendance externe.
+        Confirmé sur deux cycles consécutifs pour écarter le bruit statistique.</div>
+      <div class="step-card">
+        <span class="k">latence_dependance_ms</span> = <span class="v">412.0</span>
+        &nbsp;·&nbsp; z-score <span class="v">6.8</span> &nbsp;·&nbsp; seuil 3.0
+      </div>
+    </div>
+  </div>
+
+  <div class="step" data-step="2">
+    <div class="step-rail">
+      <div class="step-dot"></div>
+      <div class="step-line"><div class="step-line-fill"></div></div>
+    </div>
+    <div class="step-body">
+      <div class="step-tag">02 · Deux enquêteurs, cloisonnés</div>
+      <div class="step-h">Chacun ne voit que sa modalité</div>
+      <div class="step-p">L'agent métriques observe la latence en hausse. L'agent journaux
+        confirme, indépendamment, un afflux d'appels dans les logs applicatifs.
+        Ni l'un ni l'autre n'a vu les données de l'autre.</div>
+      <div class="step-card">
+        Agent métriques → <span class="v">"la dépendance externe sature"</span><br>
+        Agent journaux &nbsp;→ <span class="v">"afflux d'appels concurrents détecté"</span><br>
+        Statut &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ <span class="go">accord</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" data-step="3">
+    <div class="step-rail">
+      <div class="step-dot"></div>
+      <div class="step-line"><div class="step-line-fill"></div></div>
+    </div>
+    <div class="step-body">
+      <div class="step-tag">03 · La confiance, calculée en code</div>
+      <div class="step-h">Deux sources indépendantes, une confiance qui monte</div>
+      <div class="step-p">Preuves ancrées dans les deux modalités, accord confirmé entre
+        les agents : le plafond de prudence ne s'applique pas ici.</div>
+      <div class="step-card">
+        déclarée <span class="v">0.85</span> × ancrage <span class="v">1.00</span>
+        × composant <span class="v">1.00</span> + bonus accord → retenue <span class="go">0.83</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" data-step="4">
+    <div class="step-rail">
+      <div class="step-dot"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-tag">04 · Le garde-fou décide</div>
+      <div class="step-h">Seuil atteint, action réversible : exécution seule</div>
+      <div class="step-p">0.83 ≥ 0.60 exigé pour une mise à l'échelle — une action
+        sans interruption et exactement annulable. Aucune intervention humaine requise.</div>
+      <div class="step-card">
+        action <span class="v">scale_replica</span> · risque
+        <span class="v">faible</span> → <span class="go">autoriser_auto</span><br>
+        dependency-service : 1 → 2 répliques · latence 412ms → 178ms
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="landing-footer">
+  <div class="footer-h">Voir le système au travail</div>
+  <p class="footer-p">La console de supervision affiche la frise temporelle en direct,
+    le face-à-face complet des deux enquêteurs, et l'historique des décisions.</p>
+  <a class="btn btn-primary" href="#" id="ctaDashboardFooter">Ouvrir la console →</a>
+  <div class="footer-meta">
+    <span>SentinelOps</span>
+    <span>·</span>
+    <span>AIOps multi-agents</span>
+    <span>·</span>
+    <span>Stage Alexsys Solutions 2025/2026</span>
+  </div>
+</section>
+
+<script>
+// En dur sur localhost:8501 : c'est le port publié par le service
+// Streamlit dans docker-compose.yml. Fonctionne tel quel dans le
+// scénario d'usage réel — la landing et le dashboard tournent sur la
+// même machine, ouverts depuis le même navigateur.
+const DASHBOARD_URL = "http://localhost:8501";
+document.getElementById("ctaDashboard").href = DASHBOARD_URL;
+document.getElementById("ctaDashboardFooter").href = DASHBOARD_URL;
+
+const progressBar = document.getElementById("progressBar");
+function updateProgress() {
+  const h = document.documentElement;
+  const scrolled = h.scrollTop;
+  const height = h.scrollHeight - h.clientHeight;
+  progressBar.style.width = (height > 0 ? (scrolled / height) * 100 : 0) + "%";
+}
+document.addEventListener("scroll", updateProgress, { passive: true });
+updateProgress();
+
+document.getElementById("scrollCue").addEventListener("click", () => {
+  document.getElementById("story").scrollIntoView({ behavior: "smooth" });
+});
+
+function animateCounters() {
+  document.querySelectorAll("[data-count]").forEach((el) => {
+    const target = parseFloat(el.dataset.count);
+    const suffix = el.dataset.suffix || "";
+    const decimals = el.dataset.count.includes(".") ? 1 : 0;
+    const duration = 1400;
+    const start = performance.now();
+
+    function tick(now) {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const value = target * eased;
+      el.textContent = value.toFixed(decimals) + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+      else el.textContent = target.toFixed(decimals) + suffix;
+    }
+    requestAnimationFrame(tick);
+  });
+}
+window.addEventListener("load", () => setTimeout(animateCounters, 550));
+
+const steps = document.querySelectorAll(".step");
+const isLastStep = (el) => el.dataset.step === String(steps.length);
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry) => {
+    if (!entry.isIntersecting) return;
+    const el = entry.target;
+    el.classList.add("in-view");
+
+    const dot = el.querySelector(".step-dot");
+    const fill = el.querySelector(".step-line-fill");
+    dot.classList.add(isLastStep(el) ? "ok" : "active");
+    if (fill) setTimeout(() => { fill.style.height = "100%"; }, 200);
+
+    observer.unobserve(el);
+  });
+}, { threshold: 0.35, rootMargin: "0px 0px -10% 0px" });
+
+steps.forEach((s) => observer.observe(s));
+
+const revealObserver = new IntersectionObserver((entries) => {
+  entries.forEach((entry) => {
+    if (entry.isIntersecting) {
+      entry.target.style.transition = "opacity .7s ease, transform .7s ease";
+      entry.target.style.opacity = "1";
+      entry.target.style.transform = "none";
+      revealObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.5 });
+document.querySelectorAll(".reveal").forEach((el) => revealObserver.observe(el));
+</script>
+</body>
+</html>

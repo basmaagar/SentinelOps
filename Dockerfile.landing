@@ -1,0 +1,11 @@
+# Landing page — service Nginx.
+#
+# Un seul fichier HTML autonome (aucun appel serveur, tout le comportement
+# est en JavaScript côté navigateur) : un serveur de fichiers statiques
+# suffit. Nginx plutôt qu'un service Python évite une dépendance et un
+# temps de démarrage pour ce qui ne fait que répondre "voici le fichier".
+FROM nginx:1.27-alpine
+
+COPY landing/index.html /usr/share/nginx/html/index.html
+
+EXPOSE 80

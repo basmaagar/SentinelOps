@@ -27,6 +27,7 @@ et non parce qu'un score opaque était bas.
 Lancement :  streamlit run dashboard/app.py
 """
 
+import os
 import sys
 import json
 import time
@@ -50,7 +51,10 @@ DECISIONS_PATH = _ROOT / "guardrails" / "decisions_log.jsonl"
 RESULTS_PATH = _ROOT / "evaluation" / "evaluation_results.json"
 GROUND_TRUTH_PATH = _ROOT / "injectors" / "ground_truth.jsonl"
 PENDING_PATH = _ROOT / "remediation" / "pending_validations.jsonl"
-PROMETHEUS_URL = "http://localhost:9090"
+# Lu depuis l'environnement pour fonctionner à la fois hors conteneur
+# (localhost:9090, comportement d'origine) et à l'intérieur du réseau
+# Docker, où Prometheus n'est joignable que par son nom de service.
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 HUMAN_FEEDBACK_PATH = _ROOT / "remediation" / "human_feedback.jsonl"
 
 st.set_page_config(page_title="SentinelOps — console", layout="wide",
